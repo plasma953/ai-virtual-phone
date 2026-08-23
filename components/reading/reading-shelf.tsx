@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { ChevronLeft, Palette, Settings } from "lucide-react";
-import { loadBooks, addBook, deleteBook, saveChapters, loadProgress, saveRawFile } from "@/lib/reading-storage";
+import { ChevronLeft, Palette, Settings, Trash2, RotateCcw, Download, Upload, FolderInput, FolderPlus } from "lucide-react";
+import { loadBooks, addBook, deleteBook, saveChapters, loadProgress, saveRawFile, softDeleteBook, restoreBook, purgeBook, updateBook, exportReadingLibrary, importReadingLibrary } from "@/lib/reading-storage";
 import { decodeTxtArrayBuffer, parseTxtContent, parseEpubFile, PDF_PAGES_PER_CHAPTER } from "@/lib/reading-parser";
 import { loadReadingInteractionConfig } from "@/lib/reading-storage";
 import type { Book, BookChapter } from "@/lib/reading-types";
@@ -101,6 +101,14 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
     const [importStatus, setImportStatus] = useState<string | null>(null);
     const [importError, setImportError] = useState<{ summary: string; detail?: string } | null>(null);
     const [search, setSearch] = useState("");
+    const [viewMode, setViewMode] = useState<"shelf" | "trash">("shelf");
+    const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+    const [moveTarget, setMoveTarget] = useState<Book | null>(null);
+    const [moveCategory, setMoveCategory] = useState("未分类");
+    const [showNewCategoryDialog, setShowNewCategoryDialog] = useState(false);
+    const [newCategoryName, setNewCategoryName] = useState("");
+    const [exporting, setExporting] = useState(false);
+    const libraryFileRef = useRef<HTMLInputElement>(null);
     const [showAppearanceDialog, setShowAppearanceDialog] = useState(false);
     const [showInteractionDialog, setShowInteractionDialog] = useState(false);
     const fileRef = useRef<HTMLInputElement>(null);
@@ -162,9 +170,26 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
         persistImportDiagnostic(null);
     };
 
-    const filteredBooks = search.trim()
-        ? books.filter(b => b.title.toLowerCase().includes(search.toLowerCase()) || b.author?.toLowerCase().includes(search.toLowerCase()))
-        : books;
+    const activeBooks = books.filter((b) => !b.trashedAt);
+    const trashBooks = books.filter((b) => Boolean(b.trashedAt));
+    const categories = useMemo(() => {
+        const set = new Set<string>();
+        for (const b of activeBooks) {
+            const c = b.category?.trim();
+            if (c) set.add(c);
+        }
+        return Array.from(set).sort((a, b) => a.localeCompare(b, "zh"));
+    }, [activeBooks]);
+    const filteredBooks = useMemo(() => {
+        let list = viewMode === "trash" ? trashBooks : activeBooks;
+        if (selectedCategory && viewMode === "shelf") {
+            list = list.filter((b) => (b.category?.trim() || "未分类") === selectedCategory);
+        }
+        if (search.trim()) {
+            list = list.filter(b => b.title.toLowerCase().includes(search.toLowerCase()) || b.author?.toLowerCase().includes(search.toLowerCase()));
+        }
+        return list;
+    }, [activeBooks, trashBooks, viewMode, selectedCategory, search]);
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -201,8 +226,9 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
                     format: "txt",
                     updatedAt: new Date().toISOString(),
                 });
-                const { text } = decodeTxtArrayBuffer(await file.arrayBuffer());
-                parsed = parseTxtContent(text, file.name, loadReadingInteractionConfig().paragraphMode);
+                const readingConfig = loadReadingInteractionConfig();
+                const { text } = decodeTxtArrayBuffer(await file.arrayBuffer(), readingConfig.txtEncoding);
+                parsed = parseTxtContent(text, file.name, readingConfig.paragraphMode);
                 format = "txt";
             } else if (ext === "epub") {
                 importStage = "读取 EPUB 文件";
@@ -346,9 +372,77 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
     };
 
     const handleDelete = async (bookId: string) => {
-        if (!confirm("确定删除这本书吗？")) return;
-        await deleteBook(bookId);
+        if (!confirm("移入回收站？之后可在回收站恢复。")) return;
+        await softDeleteBook(bookId);
         setBooks(loadBooks());
+    };
+    const handleRestore = async (bookId: string) => {
+        await restoreBook(bookId);
+        setBooks(loadBooks());
+    };
+    const handlePurge = async (bookId: string) => {
+        if (!confirm("彻底删除这本书？此操作不可恢复！")) return;
+        await purgeBook(bookId);
+        setBooks(loadBooks());
+    };
+    const handleMoveBook = async () => {
+        if (!moveTarget) return;
+        const finalCat = newCategoryName.trim() || (moveCategory === "未分类" ? "" : moveCategory);
+        const updated: Book = { ...moveTarget, category: finalCat || undefined };
+        try {
+            await updateBook(updated);
+        } catch (err) {
+            console.error("[Reading] move book failed:", err);
+            alert("移动分类失败，请重试");
+        }
+        setBooks(loadBooks());
+        setMoveTarget(null);
+        setNewCategoryName("");
+    };
+    const handleCreateCategory = async () => {
+        const name = newCategoryName.trim();
+        if (!name) return;
+        setShowNewCategoryDialog(false);
+        setNewCategoryName("");
+        setSelectedCategory(name);
+        setViewMode("shelf");
+    };
+    const handleExportLibrary = async () => {
+        setExporting(true);
+        try {
+            const data = await exportReadingLibrary();
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `ai-virtual-phone-reading-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 3000);
+        } catch (err) {
+            console.error("[Reading] export failed:", err);
+            alert("导出失败，请重试");
+        } finally {
+            setExporting(false);
+        }
+    };
+    const handleLibraryImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = "";
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            const result = await importReadingLibrary(data);
+            setBooks(loadBooks());
+            if (result.ok) {
+                alert(`导入成功：书 ${result.counts?.books ?? "?"} 本、批注 ${result.counts?.annotations ?? "?"} 条、摘要 ${result.counts?.summaries ?? "?"} 条、事实卡 ${result.counts?.facts ?? "?"} 条、感受 ${result.counts?.impressions ?? "?"} 条`);
+            } else {
+                alert(`导入失败：${result.error}`);
+            }
+        } catch (err) {
+            console.error("[Reading] library import failed:", err);
+            alert("导入失败：文件不是有效的书库 JSON");
+        }
     };
 
     const formatBadge = (f: string) => f.toUpperCase();
@@ -364,7 +458,14 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
                         <ChevronLeft size={22} strokeWidth={2.5} />
                     </button>
                     <div className="reading-shelf-actions">
-                        <button className="reading-shelf-action-btn" type="button" onClick={() => setShowInteractionDialog(true)} aria-label="阅读设置">
+                        <button className="reading-shelf-action-btn" type="button" onClick={() => { void handleExportLibrary(); }} aria-label="导出书库" disabled={exporting}>
+                        {exporting ? <span style={{ fontSize: 10 }}>…</span> : <Download size={16} strokeWidth={1.7} />}
+                    </button>
+                    <label className="reading-shelf-action-btn" style={{ cursor: "pointer" }} aria-label="导入书库">
+                        <Upload size={16} strokeWidth={1.7} />
+                        <input ref={libraryFileRef} type="file" accept=".json,application/json" onChange={handleLibraryImport} className="hidden" />
+                    </label>
+                    <button className="reading-shelf-action-btn" type="button" onClick={() => setShowInteractionDialog(true)} aria-label="阅读设置">
                             <Settings size={16} strokeWidth={1.7} />
                         </button>
                         <button className="reading-shelf-action-btn" type="button" onClick={() => setShowAppearanceDialog(true)} aria-label="阅读外观">
@@ -379,12 +480,57 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
                     </div>
                 </div>
                 <div className="reading-shelf-title-stack">
-                    <h1 className="reading-shelf-title">书架</h1>
-                    <span className="reading-shelf-subtitle">{books.length} BOOKS IN YOUR LIBRARY</span>
+                    <h1 className="reading-shelf-title">{viewMode === "trash" ? "回收站" : "书架"}</h1>
+                    <span className="reading-shelf-subtitle">{viewMode === "trash" ? `${trashBooks.length} BOOKS IN TRASH` : `${activeBooks.length} BOOKS IN YOUR LIBRARY`}</span>
+                </div>
+                <div className="reading-shelf-tabs">
+                    <button
+                        type="button"
+                        className={`reading-shelf-tab${viewMode === "shelf" ? " reading-shelf-tab--active" : ""}`}
+                        onClick={() => { setViewMode("shelf"); setSelectedCategory(null); }}
+                    >
+                        书架
+                    </button>
+                    <button
+                        type="button"
+                        className={`reading-shelf-tab${viewMode === "trash" ? " reading-shelf-tab--active" : ""}`}
+                        onClick={() => setViewMode("trash")}
+                    >
+                        回收站{trashBooks.length > 0 ? ` (${trashBooks.length})` : ""}
+                    </button>
                 </div>
             </header>
 
             <div className="reading-shelf-body">
+                {viewMode === "shelf" && (
+                    <div className="reading-category-chips">
+                        <button
+                            type="button"
+                            className={`reading-category-chip${!selectedCategory ? " reading-category-chip--active" : ""}`}
+                            onClick={() => setSelectedCategory(null)}
+                        >
+                            全部
+                        </button>
+                        {categories.map((c) => (
+                            <button
+                                key={c}
+                                type="button"
+                                className={`reading-category-chip${selectedCategory === c ? " reading-category-chip--active" : ""}`}
+                                onClick={() => setSelectedCategory(selectedCategory === c ? null : c)}
+                            >
+                                {c}
+                            </button>
+                        ))}
+                        <button
+                            type="button"
+                            className="reading-category-chip reading-category-chip--new"
+                            onClick={() => { setNewCategoryName(""); setShowNewCategoryDialog(true); }}
+                        >
+                            <FolderPlus size={12} strokeWidth={1.8} />新分类
+                        </button>
+                    </div>
+                )}
+                
                 <div className="px-4 pb-3">
                     <div className="reading-search-bar">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -419,7 +565,11 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
 
                 {filteredBooks.length === 0 ? (
                     <div className="py-10 text-center ts-14" style={{ color: "var(--reading-warm-ink-tertiary, #999)" }}>
-                        {books.length === 0 ? "还没有书籍，点右上角 + 导入" : "没有匹配的书籍"}
+                        {viewMode === "trash"
+                            ? (trashBooks.length === 0 ? "回收站是空的" : "没有匹配的书籍")
+                            : selectedCategory
+                                ? `「${selectedCategory}」分类还没有书籍，点书籍栏的文件夹图标可移动分类`
+                                : books.length === 0 ? "还没有书籍，点右上角 + 导入" : "没有匹配的书籍"}
                     </div>
                 ) : (
                     <div className="reading-book-list">
@@ -468,14 +618,45 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
                                             <div className="reading-list-progress-fill" style={{ width: `${prog?.hasProgress ? progressPct : 0}%` }} />
                                         </div>
                                     </div>
-                                    <button
-                                        className="reading-list-delete"
-                                        onClick={(e) => { e.stopPropagation(); handleDelete(book.id); }}
-                                    >
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                            <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                                        </svg>
-                                    </button>
+                                    <div className="reading-list-actions">
+                                        {viewMode === "shelf" ? (
+                                            <>
+                                                <button
+                                                    className="reading-list-delete"
+                                                    onClick={(e) => { e.stopPropagation(); setMoveTarget(book); setMoveCategory(book.category?.trim() || "未分类"); }}
+                                                    aria-label="移动分类"
+                                                >
+                                                    <FolderInput size={14} strokeWidth={1.5} />
+                                                </button>
+                                                <button
+                                                    className="reading-list-delete"
+                                                    onClick={(e) => { e.stopPropagation(); handleDelete(book.id); }}
+                                                    aria-label="移入回收站"
+                                                >
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                                        <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                    </svg>
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <button
+                                                    className="reading-list-delete reading-list-delete--restore"
+                                                    onClick={(e) => { e.stopPropagation(); handleRestore(book.id); }}
+                                                    aria-label="恢复"
+                                                >
+                                                    <RotateCcw size={14} strokeWidth={1.5} />
+                                                </button>
+                                                <button
+                                                    className="reading-list-delete reading-list-delete--danger"
+                                                    onClick={(e) => { e.stopPropagation(); handlePurge(book.id); }}
+                                                    aria-label="彻底删除"
+                                                >
+                                                    <Trash2 size={14} strokeWidth={1.5} />
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                             );
                         })}
@@ -483,7 +664,7 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
                 )}
 
                 <div className="reading-shelf-footer">
-                    共 {books.length} 本书籍
+                    {viewMode === "trash" ? `回收站 ${trashBooks.length} 本` : `共 ${activeBooks.length} 本书籍`}
                 </div>
             </div>
 
@@ -498,6 +679,67 @@ export function ReadingShelf({ onOpenBook, onClose, appearance, backgroundUrl, o
 
             {showInteractionDialog && (
                 <ReadingInteractionDialog onClose={() => setShowInteractionDialog(false)} />
+            )}
+            {moveTarget && (
+                <div className="modal-overlay" data-ui="modal" onClick={() => setMoveTarget(null)}>
+                    <div className="modal-dialog" data-ui="modal-dialog" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header" data-ui="modal-header">
+                            <h3 className="modal-title">移动《{moveTarget.title}》到分类</h3>
+                        </div>
+                        <div className="modal-body" data-ui="modal-body" style={{ textAlign: "left", width: "100%" }}>
+                            <div className="reading-move-categories">
+                                <button
+                                    type="button"
+                                    className={`reading-move-cat${moveCategory === "未分类" ? " reading-move-cat--active" : ""}`}
+                                    onClick={() => setMoveCategory("未分类")}
+                                >
+                                    未分类
+                                </button>
+                                {categories.map((c) => (
+                                    <button
+                                        key={c}
+                                        type="button"
+                                        className={`reading-move-cat${moveCategory === c ? " reading-move-cat--active" : ""}`}
+                                        onClick={() => setMoveCategory(c)}
+                                    >
+                                        {c}
+                                    </button>
+                                ))}
+                            </div>
+                            <input
+                                className="reading-category-input"
+                                value={newCategoryName}
+                                onChange={(e) => setNewCategoryName(e.target.value)}
+                                placeholder="或输入新分类名…"
+                            />
+                        </div>
+                        <div className="modal-footer" data-ui="modal-footer">
+                            <button className="ui-btn ui-btn-outline" onClick={() => setMoveTarget(null)}>取消</button>
+                            <button className="ui-btn ui-btn-primary" onClick={() => { void handleMoveBook(); }}>确定</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {showNewCategoryDialog && (
+                <div className="modal-overlay" data-ui="modal" onClick={() => setShowNewCategoryDialog(false)}>
+                    <div className="modal-dialog" data-ui="modal-dialog" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header" data-ui="modal-header">
+                            <h3 className="modal-title">新建分类</h3>
+                        </div>
+                        <div className="modal-body" data-ui="modal-body" style={{ textAlign: "left", width: "100%" }}>
+                            <input
+                                className="reading-category-input"
+                                value={newCategoryName}
+                                onChange={(e) => setNewCategoryName(e.target.value)}
+                                placeholder="输入分类名，如：小说 / 传记 / 工具书…"
+                            />
+                        </div>
+                        <div className="modal-footer" data-ui="modal-footer">
+                            <button className="ui-btn ui-btn-outline" onClick={() => setShowNewCategoryDialog(false)}>取消</button>
+                            <button className="ui-btn ui-btn-primary" onClick={() => { void handleCreateCategory(); }}>创建</button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );
