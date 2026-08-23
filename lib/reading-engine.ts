@@ -435,3 +435,129 @@ export async function generateReadingChat(
     // Return raw text — caller is responsible for parsing and saving (like chat-room's splitAndSaveAIMessages)
     return responseText;
 }
+
+// ── AI 阅读智能（移植自 coread：章节摘要 / 读后感受 / 事实卡）──
+
+export type ChapterSummaryResult = {
+    summary: string;
+    keyPoints: string[];
+};
+
+/** 生成章节摘要（要点+正文）。复用阅读绑定的 API 与角色人设。 */
+export async function generateChapterSummary(
+    book: Book,
+    chapter: BookChapter,
+    characterId: string,
+): Promise<ChapterSummaryResult> {
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) throw new Error("角色不存在");
+    const chapterContent = chapter.paragraphs.slice(0, 120).join("\n");
+    const resolved = await resolveReadingInput(characterId, ["reading", "summarize", ...(chapter.index >= 0 ? ["chapter"] : [])], {
+        bookTitle: book.title,
+        chapterTitle: chapter.title,
+        chapterContent,
+        annotationHistory: "",
+    });
+    if (!resolved) throw new Error("未找到 API 配置，请在设置中绑定 API");
+    const { input, apiConfig, preset } = resolved;
+    const llmMessages = assemblePromptPayload(input);
+    llmMessages.push({
+        role: "user",
+        content: `请为《${book.title}》第 ${chapter.index + 1} 章「${chapter.title}」生成章节摘要。要求：\n- 用读书伙伴的口吻，150 字以内概括本章讲了什么（情节/信息/情感走向）\n- 提取 3-5 个关键点\n- 严格输出格式：\n【摘要】\n<正文>\n【要点】\n- <要点1>\n- <要点2>\n...`,
+    });
+    const responseText = await callReadingLLM(
+        apiConfig!,
+        preset,
+        llmMessages,
+        character.name,
+        input.regexes,
+        input.appTags,
+        input.userIdentity?.name,
+    );
+    if (!responseText) throw new Error("API 返回空内容");
+    const summaryMatch = /【摘要】([\s\S]*?)(?:【要点】|$)/.exec(responseText);
+    const pointsMatch = /【要点】([\s\S]*)$/.exec(responseText);
+    const summary = (summaryMatch?.[1] || responseText).trim();
+    const keyPoints = (pointsMatch?.[1] || "")
+        .split(/\n+/)
+        .map(line => line.replace(/^[-\s*•]+/, "").trim())
+        .filter(Boolean)
+        .slice(0, 8);
+    return { summary, keyPoints };
+}
+
+/** 生成读后感受（整本书读完后的整体印象）。 */
+export async function generateReadingImpression(
+    book: Book,
+    chapterTitles: string[],
+    characterId: string,
+): Promise<string> {
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) throw new Error("角色不存在");
+    const resolved = await resolveReadingInput(characterId, ["reading", "impression"], {
+        bookTitle: book.title,
+        chapterTitle: "整本书",
+        chapterContent: `章节结构：${chapterTitles.join(" → ")}`,
+        annotationHistory: "",
+    });
+    if (!resolved) throw new Error("未找到 API 配置，请在设置中绑定 API");
+    const { input, apiConfig, preset } = resolved;
+    const llmMessages = assemblePromptPayload(input);
+    llmMessages.push({
+        role: "user",
+        content: `你刚和用户一起读完了《${book.title}》。请以读书伙伴的口吻写一段读后感受（150-250字）：印象最深的部分、整体情绪、有没有想吐槽或回味的地方，像看完和好朋友聊书一样自然，不要写成书评。`,
+    });
+    const responseText = await callReadingLLM(
+        apiConfig!,
+        preset,
+        llmMessages,
+        character.name,
+        input.regexes,
+        input.appTags,
+        input.userIdentity?.name,
+    );
+    if (!responseText) throw new Error("API 返回空内容");
+    return responseText.trim();
+}
+
+/** 生成章节「事实卡」：需要记住的关键信息（1-5 条，含重要性分级）。 */
+export async function generateBookFacts(
+    book: Book,
+    chapter: BookChapter,
+    characterId: string,
+): Promise<Array<{ text: string; importance: number }>> {
+    const character = loadCharacters().find(c => c.id === characterId);
+    if (!character) throw new Error("角色不存在");
+    const chapterContent = chapter.paragraphs.slice(0, 120).join("\n");
+    const resolved = await resolveReadingInput(characterId, ["reading", "facts"], {
+        bookTitle: book.title,
+        chapterTitle: chapter.title,
+        chapterContent,
+        annotationHistory: "",
+    });
+    if (!resolved) throw new Error("未找到 API 配置，请在设置中绑定 API");
+    const { input, apiConfig, preset } = resolved;
+    const llmMessages = assemblePromptPayload(input);
+    llmMessages.push({
+        role: "user",
+        content: `从《${book.title}》第 ${chapter.index + 1} 章「${chapter.title}」中提取值得记住的关键信息（人物关系/关键情节/伏笔/设定），最多 5 条。严格按行输出：\n重要度:1-5 | 一句话事实\n（重要度 5=必须记住，1=锦上添花；不要输出其他内容）`,
+    });
+    const responseText = await callReadingLLM(
+        apiConfig!,
+        preset,
+        llmMessages,
+        character.name,
+        input.regexes,
+        input.appTags,
+        input.userIdentity?.name,
+    );
+    if (!responseText) throw new Error("API 返回空内容");
+    const results: Array<{ text: string; importance: number }> = [];
+    for (const line of responseText.split(/\n+/)) {
+        const m = /重要度\s*[:：]\s*([1-5])\s*\|\s*(.+)/.exec(line.trim());
+        if (m) {
+            results.push({ text: m[2].trim(), importance: parseInt(m[1], 10) });
+        }
+    }
+    return results;
+}
