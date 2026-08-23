@@ -7,6 +7,12 @@ export type Book = {
     format: "txt" | "epub" | "pdf";
     totalChapters: number;
     createdAt: string;
+    /** 书籍分类（coread 风格书库管理） */
+    category?: string;
+    /** 书籍标签列表 */
+    tags?: string[];
+    /** 回收站：非空表示已移入回收站（记录删除时间），可恢复 */
+    trashedAt?: string | null;
 };
 
 export type BookChapter = {
@@ -48,4 +54,58 @@ export type ReadingAnnotation = {
     characterName: string;
     content: string;
     createdAt: string;
+};
+
+// ── 用户批注体系（移植自 coread：高亮 / 波浪线 / 评论 / 收藏）──
+
+export type UserAnnotationKind = "highlight" | "underline" | "comment" | "favorite";
+
+export type UserAnnotation = {
+    id: string;
+    bookId: string;
+    chapterIndex: number;
+    paragraphIndex: number;
+    /** 选区在段落文本内的字符偏移（包含式 [startOffset, endOffset)） */
+    startOffset: number;
+    endOffset: number;
+    /** 选区原文快照 */
+    text: string;
+    kind: UserAnnotationKind;
+    /** comment 类型时的评论内容 */
+    note?: string;
+    createdAt: string;
+};
+
+// ── AI 阅读智能（移植自 coread：章节摘要 / 读后感受 / 事实卡）──
+
+export type ChapterSummary = {
+    id: string;
+    bookId: string;
+    chapterIndex: number;
+    title: string;
+    summary: string;
+    keyPoints: string[];
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type BookFact = {
+    id: string;
+    bookId: string;
+    chapterIndex: number;
+    text: string;
+    /** 重要性 1-5（coread importance levels 简化版） */
+    importance: number;
+    /** 追加式修订历史（append-only） */
+    history: { text: string; at: string }[];
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type ReadingImpression = {
+    id: string;
+    bookId: string;
+    content: string;
+    createdAt: string;
+    updatedAt: string;
 };
