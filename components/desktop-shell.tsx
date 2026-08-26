@@ -6,6 +6,7 @@ import { updateStatusBarTone } from "@/lib/bg-tone";
 import { MOBILE_SHELL_MQ } from "@/lib/mobile-shell";
 import { startDiaryEntryTimerService, stopDiaryEntryTimerService } from "@/lib/diary-entry-timer-service";
 import { startFollowUpService, stopFollowUpService } from "@/lib/follow-up-service";
+import { startSurfService } from "@/lib/surf-engine";
 import { startMomentsService, stopMomentsService } from "@/lib/moments-engine";
 import { bgTimerCleanup } from "@/lib/bg-timer";
 import { PhoneThemeApp } from "@/components/phone-theme-app";
@@ -1817,6 +1818,8 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
 
       if (cancelled) return;
       startFollowUpService();
+      // AI 自主冲浪：非交互时段自由探索、沉淀见闻、择机分享（设置里可关）
+      startSurfService();
       startMomentsService();
       startDiaryEntryTimerService();
       const stopWeixinCloudRealtimeSync = startWeixinCloudRealtimeSync();
