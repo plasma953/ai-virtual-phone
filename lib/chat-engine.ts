@@ -1055,14 +1055,8 @@ async function generateRemoteOnce(
         },
         dedupKey,
     });
-    try { options?.onToolNotice?.(`回复已交由远程网关生成（${jobId.slice(0, 16)}…）`); } catch { /* ignore */ }
     const job = await waitRemoteJob(remoteCfg, jobId, {
         signal: options?.signal,
-        onStatus: (current) => {
-            if (current.status === "generating") {
-                try { options?.onToolNotice?.("远程网关正在生成回复…"); } catch { /* ignore */ }
-            }
-        },
     });
     if (job.status !== "done" || typeof job.output !== "string" || !job.output) {
         throw new ChatEngineError(job.error || "远程生成失败，网关未返回结果");
@@ -1162,9 +1156,6 @@ export async function sendLLMRequestWithRemoteFallback(
             if (options?.signal?.aborted) throw error;
             const detail = error instanceof Error ? error.message : String(error);
             console.warn("[ChatEngine] Remote generation failed, falling back to local:", detail);
-            try {
-                options?.onToolNotice?.(`远程中转不可用（${detail.slice(0, 120)}），已自动改为本地生成`);
-            } catch { /* ignore */ }
             if (typeof window !== "undefined") {
                 window.dispatchEvent(new CustomEvent(REMOTE_CHAT_FALLBACK_EVENT, { detail: { message: detail } }));
             }
