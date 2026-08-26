@@ -251,6 +251,15 @@ export type ChatMessage = {
     senderName?: string; // cached display name to avoid repeated lookups
 };
 
+export type RemoteGenerationSettings = {
+    /** 是否启用 VPS 中转回复 */
+    enabled?: boolean;
+    /** 网关地址，例如 https://chat.example.com 或 http://1.2.3.4:8795（不含末尾斜杠） */
+    baseUrl?: string;
+    /** 网关令牌，与 VPS 端 PHONE_GATEWAY_TOKEN 一致 */
+    apiToken?: string;
+};
+
 export type ChatAppSettings = {
     globalAppBackground?: string; // base64 or URL
     timeAware?: boolean; // When true, inject timestamps into prompt so AI knows message timing (default: true)
@@ -260,6 +269,7 @@ export type ChatAppSettings = {
     enterToSendEnabled?: boolean; // When true, Enter sends chat input and Shift+Enter inserts a newline
     callVibrationEnabled?: boolean; // 语音/视频来电等待接听时循环振动（默认开；iOS 网页不支持振动则无效果）
     maxToolRounds?: number; // 单条消息的工具循环轮数上限（默认 5；每轮=一次模型请求，轮内调用条数不限）
+    remoteGeneration?: RemoteGenerationSettings; // VPS 中转回复：回复生成交由自部署网关完成，断线可续
 };
 
 /** 单条消息工具循环轮数上限（默认 5，夹在 1–20 之间） */

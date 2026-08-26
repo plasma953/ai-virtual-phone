@@ -86,6 +86,13 @@ import {
 import { parseOfflineResponse, type ParsedOfflineResponse } from "./chat-offline-storage";
 import { throwIfAborted } from "./abort-utils";
 import { armShortcutContinuation, type ShortcutContinuationHandle, type ShortcutContinuationStyle } from "./shortcut-continuation-client";
+import {
+    REMOTE_CHAT_FALLBACK_EVENT,
+    loadRemoteGenerationSettings,
+    submitRemoteJob,
+    waitRemoteJob,
+    type RemoteGenerationSettings as RemoteGenerationConfig,
+} from "./remote-chat-client";
 
 
 
@@ -1006,6 +1013,162 @@ export async function sendLLMRequest(
         clearTimeout(llmTimeout);
         detachExternalAbort();
     }
+}
+
+// ── VPS 中转回复：远程生成 + 本地兜底 ─────────────────────────────────
+// 与 sendLLMRequest 同签名同语义：远程网关可用时，把 buildProviderRequest
+// 的完整快照提交到 VPS 生成，轮询拿回原始响应后用本地解析器解析，
+// 后续日志/插件/输出正则管线与本地完全一致；远程失败自动回落本地。
+async function generateRemoteOnce(
+    remoteCfg: RemoteGenerationConfig,
+    config: ApiConfig,
+    preset: PresetConfig | null,
+    request: ReturnType<typeof buildProviderRequest>,
+    regexes: RegexConfig[],
+    meta: { characterName?: string; userName?: string },
+    options?: {
+        skipOutputRegex?: boolean;
+        includeReasoning?: boolean;
+        onReasoning?: (text: string) => void;
+        onToolNotice?: (text: string) => void;
+        appId?: string;
+        appTags?: string[];
+        followUpCount?: number;
+        debugSessionId?: string;
+        signal?: AbortSignal;
+    },
+): Promise<string> {
+    const pluginPurpose = options?.appId ?? "chat";
+    const jobId = await submitRemoteJob(remoteCfg, {
+        request: {
+            url: request.url,
+            headers: request.headers,
+            body: request.body,
+            providerKind: request.providerKind,
+        },
+        merge: {
+            appId: pluginPurpose,
+            debugSessionId: options?.debugSessionId ?? "",
+            characterName: meta?.characterName ?? "",
+            userName: meta?.userName ?? "",
+        },
+    });
+    try { options?.onToolNotice?.(`回复已交由远程网关生成（${jobId.slice(0, 16)}…）`); } catch { /* ignore */ }
+    const job = await waitRemoteJob(remoteCfg, jobId, {
+        signal: options?.signal,
+        onStatus: (current) => {
+            if (current.status === "generating") {
+                try { options?.onToolNotice?.("远程网关正在生成回复…"); } catch { /* ignore */ }
+            }
+        },
+    });
+    if (job.status !== "done" || typeof job.output !== "string" || !job.output) {
+        throw new ChatEngineError(job.error || "远程生成失败，网关未返回结果");
+    }
+    let data: unknown;
+    try {
+        data = JSON.parse(job.output);
+    } catch {
+        throw new ChatEngineError("远程网关返回的内容不是合法 JSON");
+    }
+    const parsed = parseProviderResponse(request.providerKind, data);
+    let rawOutput = parsed.content || "";
+    if (parsed.reasoning) {
+        try { options?.onReasoning?.(parsed.reasoning); } catch { /* 捕获回调异常，不影响主流程 */ }
+    }
+    // 与 sendLLMRequest 一致：调用方要求时把思维链包进 <think> 块
+    if (options?.includeReasoning) {
+        const reasoning = parsed.reasoning || "";
+        if (reasoning) {
+            rawOutput = `<think>\n${reasoning}\n</think>\n\n${rawOutput}`;
+        }
+    }
+    rawOutput = await applyChatPluginLlmResponse(rawOutput, pluginPurpose, options?.debugSessionId);
+    if (!rawOutput && parsed.toolCalls.length === 0) {
+        const emptyDetails = emptyResponseDetails(parsed.raw);
+        console.warn("[ChatEngine] Empty response from remote gateway!", {
+            provider: config.provider,
+            model: config.defaultModel,
+            finishReason: emptyDetails.finishReason,
+            blockReason: emptyDetails.blockReason,
+            safetyRatings: emptyDetails.safetyRatings,
+        });
+        throw new ChatEngineError(emptyDetails.message);
+    }
+
+    // API 日志：与本地调用一致，保证「底层调用大模型日志」面板可查
+    const sanitizedMessages = request.messagesForLog.map(m => ({
+        ...m,
+        content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+    }));
+    const logEntry: DebugInfo = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        characterName: meta?.characterName,
+        model: config.defaultModel,
+        messages: sanitizedMessages,
+        rawResponse: rawOutput,
+        timestamp: new Date().toISOString(),
+        usage: parsed.usage,
+    };
+    const logs = _loadLogs();
+    logs.push(logEntry);
+    while (logs.length > MAX_API_LOGS) logs.shift();
+    _saveLogs(logs);
+
+    if (options?.skipOutputRegex) {
+        return rawOutput;
+    }
+    const macroEngine = new MacroEngine(meta?.characterName ?? "", meta?.userName ?? "用户");
+    const activeTags = getActiveAppTags(options?.appId ?? "chat", {
+        appTags: options?.appTags,
+        followUpCount: options?.followUpCount,
+    });
+    return applyOutputRegex(rawOutput, regexes, { macroEngine, activeTags });
+}
+
+/**
+ * 统一回复出口：开启「远程生成」时经 VPS 中转生成；远程不可用自动回落本地。
+ * 与 sendLLMRequest 签名一致，直接替换生成循环里的 sendLLMRequest 调用点。
+ */
+export async function sendLLMRequestWithRemoteFallback(
+    config: ApiConfig,
+    preset: PresetConfig | null,
+    messages: LLMMessage[],
+    regexes: RegexConfig[],
+    meta?: { characterName?: string; userName?: string },
+    options?: {
+        skipOutputRegex?: boolean;
+        includeReasoning?: boolean;
+        onReasoning?: (text: string) => void;
+        onToolNotice?: (text: string) => void;
+        appId?: string;
+        appTags?: string[];
+        followUpCount?: number;
+        debugSessionId?: string;
+        signal?: AbortSignal;
+    },
+): Promise<string> {
+    const remoteCfg = loadRemoteGenerationSettings();
+    const remoteActive = Boolean(remoteCfg.enabled && remoteCfg.baseUrl && remoteCfg.apiToken);
+    if (remoteActive) {
+        try {
+            const requestMessages = toLlmRequestMessages(messages);
+            const request = buildProviderRequest(config, preset, requestMessages);
+            publishDebugPromptSnapshot({ request, config, preset, meta, options, requestKind: "completion" });
+            return await generateRemoteOnce(remoteCfg, config, preset, request, regexes, meta ?? {}, options);
+        } catch (error) {
+            if (options?.signal?.aborted) throw error;
+            const detail = error instanceof Error ? error.message : String(error);
+            console.warn("[ChatEngine] Remote generation failed, falling back to local:", detail);
+            try {
+                options?.onToolNotice?.(`远程中转不可用（${detail.slice(0, 120)}），已自动改为本地生成`);
+            } catch { /* ignore */ }
+            if (typeof window !== "undefined") {
+                window.dispatchEvent(new CustomEvent(REMOTE_CHAT_FALLBACK_EVENT, { detail: { message: detail } }));
+            }
+        }
+    }
+    return sendLLMRequest(config, preset, messages, regexes, meta, options);
 }
 
 export type LLMToolRequestResult = {
@@ -2464,7 +2627,12 @@ async function generateChatCompletionCore(
         }).catch(() => undefined);
     }
 
-    if (toolsEnabled && nativeToolProtocolForConfig(config) && getEnabledTools(options?.appId ?? "chat").length > 0) {
+    // VPS 中转模式：远程网关执行一次性非流式生成，原生工具流式协议不受理，
+    // 开启远程生成时走文本工具协议路径（工具指令解析与多轮逻辑完全一致）。
+    const remoteActive = Boolean(loadRemoteGenerationSettings().enabled
+        && loadRemoteGenerationSettings().baseUrl
+        && loadRemoteGenerationSettings().apiToken);
+    if (!remoteActive && toolsEnabled && nativeToolProtocolForConfig(config) && getEnabledTools(options?.appId ?? "chat").length > 0) {
         return generateNativeChatCompletion({
             session,
             llmMessages,
@@ -2488,13 +2656,14 @@ async function generateChatCompletionCore(
     for (let round = 0; round < maxToolRounds; round++) {
         let filteredOutput: string;
         try {
-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+            filteredOutput = await sendLLMRequestWithRemoteFallback(config, preset, llmMessages, regexes, meta, {
                 appId: options?.appId ?? "chat",
                 appTags: requestAppTags,
                 followUpCount: options?.followUpCount,
                 debugSessionId: session.id,
                 signal: options?.signal,
                 onReasoning: callbacks?.onReasoning,
+                onToolNotice: callbacks?.onToolNotice,
             });
         } catch (err) {
             const errMsg = `⚠️ 回复生成失败: ${err instanceof Error ? err.message : String(err)}`;
@@ -2681,13 +2850,14 @@ async function generateChatCompletionCore(
             // Last round — one final call
             if (round === maxToolRounds - 1) {
                 try {
-                    const finalOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                    const finalOutput = await sendLLMRequestWithRemoteFallback(config, preset, llmMessages, regexes, meta, {
                         appId: options?.appId ?? "chat",
                         appTags: requestAppTags,
                         followUpCount: options?.followUpCount,
                         debugSessionId: session.id,
                         signal: options?.signal,
                         onReasoning: callbacks?.onReasoning,
+                        onToolNotice: callbacks?.onToolNotice,
                     });
                     throwIfAborted(options?.signal);
                     await callbacks?.onTextPart?.(finalOutput);

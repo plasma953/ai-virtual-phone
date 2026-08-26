@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, createContext, type CSSProperties, type ReactNode } from "react";
-import { Activity, Check, ChevronRight, Clock, Database, FileText, Fingerprint, Globe, HardDrive, Image, Info, KeyRound, Laptop, Layers, Link2, Loader2, LogOut, MessageSquare, Mic, SlidersHorizontal, UserCircle, Wrench, X, CloudUpload } from "lucide-react";
+import { Activity, Check, ChevronRight, Clock, Database, FileText, Fingerprint, Globe, HardDrive, Image, Info, KeyRound, Laptop, Layers, Link2, Loader2, LogOut, MessageSquare, Mic, Server, SlidersHorizontal, UserCircle, Wrench, X, CloudUpload } from "lucide-react";
 import { ConfirmDialog } from "./ui/modal";
 import { useAccount } from "@/lib/account-context";
 import { isSelfHostedModeEnabled } from "@/lib/self-hosting";
 import { changeAccountPassword } from "@/lib/account-client";
 import { ApiSettings } from "./settings/api-settings";
+import { RemoteGenerationSettings } from "./settings/remote-generation-settings";
 import { VoiceSettings } from "./settings/voice-settings";
 import { ImageGenerationSettings } from "./settings/image-generation-settings";
 import { PresetManager } from "./settings/preset-manager";
@@ -44,6 +45,7 @@ type SettingsPageProps = {
 type SubPage =
     | "main"
     | "api"
+    | "remoteGeneration"
     | "voice"
     | "imageGeneration"
     | "presets"
@@ -61,6 +63,7 @@ type SubPage =
 
 const SETTINGS_MENU = [
     { id: "api", icon: HardDrive, label: "API 设置", desc: "大模型接口", iconColor: BINDING_ACCENTS.api , glass: "api" },
+    { id: "remoteGeneration", icon: Server, label: "远程生成", desc: "VPS 中转回复（自部署）", iconColor: BINDING_ACCENTS.memory , glass: "agent-computer" },
     { id: "voice", icon: Mic, label: "语音 API", desc: "语音合成", iconColor: BINDING_ACCENTS.voice , glass: "voice" },
     { id: "imageGeneration", icon: Image, label: "图像生成 API", desc: "模型、参考图与提示词", iconColor: CONTENT_APP_ACCENTS.moments , glass: "image-generation" },
     { id: "presets", icon: Fingerprint, label: "预设", desc: "角色预设", iconColor: BINDING_ACCENTS.preset , glass: "presets" },
@@ -292,6 +295,8 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
         switch (currentPage) {
             case "api":
                 return <ApiSettings />;
+            case "remoteGeneration":
+                return <RemoteGenerationSettings />;
             case "voice":
                 return <VoiceSettings />;
             case "imageGeneration":
@@ -388,7 +393,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                         <CardGrid
                             label="API Config"
                             labelClassName="settings-menu-section-title"
-                            items={SETTINGS_MENU.filter(item => ["api", "voice"].includes(item.id)).map(makeCardItem)}
+                            items={SETTINGS_MENU.filter(item => ["api", "remoteGeneration", "voice"].includes(item.id)).map(makeCardItem)}
                         />
                         <div className="settings-data-rules-section">
                             <h3 className="settings-menu-section-title">Data & Rules</h3>

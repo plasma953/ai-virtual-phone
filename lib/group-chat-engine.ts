@@ -10,6 +10,7 @@ import { runChatPluginTransform } from "./chat-plugin-hooks";
 import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
 import {
     sendLLMRequest,
+    sendLLMRequestWithRemoteFallback,
     sendLLMToolRequest,
     ChatEngineError,
     buildMusicLocalMacro,
@@ -808,12 +809,13 @@ export async function generateGroupChatCompletion(
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         let filteredOutput: string;
         try {
-            filteredOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+            filteredOutput = await sendLLMRequestWithRemoteFallback(config, preset, llmMessages, regexes, meta, {
                 appId: "group_chat",
                 appTags,
                 debugSessionId: session.id,
                 signal: options?.signal,
                 onReasoning: callbacks?.onReasoning,
+                onToolNotice: callbacks?.onToolNotice,
             });
         } catch (err) {
             if (finalRawOutput) {
@@ -957,12 +959,13 @@ export async function generateGroupChatCompletion(
 
             if (round === MAX_TOOL_ROUNDS - 1) {
                 try {
-                    finalRawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, meta, {
+                    finalRawOutput = await sendLLMRequestWithRemoteFallback(config, preset, llmMessages, regexes, meta, {
                         appId: "group_chat",
                         appTags,
                         debugSessionId: session.id,
                         signal: options?.signal,
                         onReasoning: callbacks?.onReasoning,
+                        onToolNotice: callbacks?.onToolNotice,
                     });
                     throwIfAborted(options?.signal);
                 } catch {
@@ -1024,7 +1027,7 @@ export async function generateGroupRawCompletion(
             apiConfigId: options?.apiConfigId,
         },
     );
-    const rawOutput = await sendLLMRequest(config, preset, llmMessages, regexes, {
+    const rawOutput = await sendLLMRequestWithRemoteFallback(config, preset, llmMessages, regexes, {
         characterName: `群聊:${session.groupName || "群聊"}`,
     }, {
         appId: options?.appId ?? "group_chat",
