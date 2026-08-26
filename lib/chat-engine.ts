@@ -1039,6 +1039,7 @@ async function generateRemoteOnce(
     },
 ): Promise<string> {
     const pluginPurpose = options?.appId ?? "chat";
+    const dedupKey = `dd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
     const jobId = await submitRemoteJob(remoteCfg, {
         request: {
             url: request.url,
@@ -1052,6 +1053,7 @@ async function generateRemoteOnce(
             characterName: meta?.characterName ?? "",
             userName: meta?.userName ?? "",
         },
+        dedupKey,
     });
     try { options?.onToolNotice?.(`回复已交由远程网关生成（${jobId.slice(0, 16)}…）`); } catch { /* ignore */ }
     const job = await waitRemoteJob(remoteCfg, jobId, {

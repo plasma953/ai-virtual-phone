@@ -18,10 +18,13 @@
 //
 // 接口：
 //   POST /v1/chat/jobs        提交生成任务 → { ok, job: { id, status: "pending" } }
-//     body: { request: { url, headers, body, providerKind }, merge: {...任意元数据，服务端原样保留} }
+//     body: { request: { url, headers, body, providerKind }, merge: {...任意元数据，服务端原样保留}, dedupKey?: string }
+//     dedupKey: 可选幂等键（1-64 位字母数字下划线连字符）。同一键重复提交时直接返回
+//               已有任务 ID（即使提交响应在客户端丢失，重提/查询也能找回原任务，不重复生成）。
 //   GET  /v1/chat/jobs/:id    查询任务 → { ok, job: { id, status, output?, error?, createdAt, startedAt, finishedAt } }
 //     status: pending | generating | done | failed
 //     output: LLM 返回的原始响应 JSON 字符串（由前端用其本地解析器解析，协议零耦合）
+//   GET  /v1/chat/jobs/by-dedup/:key  按 dedupKey 找回任务 → { ok, job: { id, status } } 或 404
 //   GET  /healthz              健康检查 → { ok, pending, active, uptimeSec }
 //
 // 说明：服务端不解析任何 LLM 协议——openai-compatible / anthropic / gemini
@@ -271,10 +274,26 @@ const server = http.createServer(async (req, res) => {
                 sendJson(res, 429, { ok: false, error: `排队任务过多（上限 ${MAX_OPEN_JOBS}），请稍后再试` });
                 return;
             }
+            // 幂等：同一 dedupKey 已有任务时直接返回已有任务（响应丢失后重提/找回不重复生成）
+            const dedupKey = typeof payload.dedupKey === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(payload.dedupKey)
+                ? payload.dedupKey
+                : "";
+            if (dedupKey) {
+                const existing = [...jobs.values()].find((j) => j.dedupKey === dedupKey);
+                if (existing) {
+                    const finished = Number(existing.finishedAt || 0);
+                    const expired = finished && Date.now() - finished > JOB_TTL_MS;
+                    if (!expired) {
+                        sendJson(res, 200, { ok: true, job: { id: existing.id, status: existing.status }, dedup: true });
+                        return;
+                    }
+                }
+            }
             const job = {
                 id: `job_${Date.now().toString(36)}_${crypto.randomBytes(6).toString("hex")}`,
                 status: "pending",
                 createdAt: Date.now(),
+                dedupKey: dedupKey || undefined,
                 payload: {
                     request: {
                         url: payload.request.url,
@@ -297,6 +316,26 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // GET /v1/chat/jobs/by-dedup/:key —— 提交响应丢失后按幂等键找回任务
+    const byDedupMatch = pathname.match(/^\/v1\/chat\/jobs\/by-dedup\/([A-Za-z0-9_-]{1,64})$/);
+    if (req.method === "GET" && byDedupMatch) {
+        const key = byDedupMatch[1];
+        const existing = [...jobs.values()].find((j) => j.dedupKey === key);
+        if (!existing) {
+            sendJson(res, 404, { ok: false, error: "dedup key not found" });
+            return;
+        }
+        sendJson(res, 200, {
+            ok: true,
+            job: {
+                id: existing.id,
+                status: existing.status,
+                createdAt: existing.createdAt,
+                finishedAt: existing.finishedAt,
+            },
+        });
+        return;
+    }
     // GET /v1/chat/jobs/:id
     const jobMatch = pathname.match(/^\/v1\/chat\/jobs\/([A-Za-z0-9_-]+)$/);
     if (req.method === "GET" && jobMatch) {

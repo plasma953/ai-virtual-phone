@@ -20,6 +20,8 @@ export type RemoteJobRequest = {
     };
     /** 服务端原样保留的元数据（预留：会话信息、正则等） */
     merge?: Record<string, unknown>;
+    /** 幂等键：提交响应丢失后可用它向网关找回已创建的任务，避免重复生成 */
+    dedupKey?: string;
 };
 
 export type RemoteJobStatus = "pending" | "generating" | "done" | "failed";
@@ -61,22 +63,77 @@ function remoteHeaders(cfg: RemoteGenerationSettings): Record<string, string> {
     };
 }
 
-/** 提交生成任务，返回 jobId。失败抛错。 */
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+/** 按幂等键找回任务 ID（提交响应丢失时用）。找不到返回 null；网络失败按 attempts 重试后仍失败则抛错。 */
+export async function findRemoteJobByDedup(
+    cfg: RemoteGenerationSettings,
+    dedupKey: string,
+    attempts = 3,
+): Promise<{ id: string; status: string } | null> {
+    const baseUrl = normalizeRemoteBaseUrl(cfg.baseUrl || "");
+    let lastError: unknown = null;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            const response = await fetch(`${baseUrl}/v1/chat/jobs/by-dedup/${encodeURIComponent(dedupKey)}`, {
+                method: "GET",
+                headers: remoteHeaders(cfg),
+            });
+            if (response.status === 404) return null; // 网关明确告知没有此任务
+            if (!response.ok) {
+                lastError = new Error(`HTTP ${response.status}`);
+                await sleep(800 * (i + 1));
+                continue;
+            }
+            const data = await response.json().catch(() => ({})) as { ok?: boolean; job?: { id?: string; status?: string } };
+            if (data.ok && data.job?.id) return { id: data.job.id, status: data.job.status || "pending" };
+            return null;
+        } catch (error) {
+            lastError = error;
+            if (i < attempts - 1) await sleep(800 * (i + 1));
+        }
+    }
+    if (lastError) throw lastError;
+    return null;
+}
+/** 提交生成任务，返回 jobId。失败抛错（含 30s 提交超时；网络失败会先尝试按 dedupKey 找回）。 */
 export async function submitRemoteJob(cfg: RemoteGenerationSettings, job: RemoteJobRequest): Promise<string> {
     const baseUrl = normalizeRemoteBaseUrl(cfg.baseUrl || "");
     if (!baseUrl) throw new Error("远程网关地址未配置");
-    const response = await fetch(`${baseUrl}/v1/chat/jobs`, {
-        method: "POST",
-        headers: remoteHeaders(cfg),
-        body: JSON.stringify(job),
-    });
-    if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`网关提交失败 HTTP ${response.status}: ${text.slice(0, 200)}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30_000);
+    try {
+        const response = await fetch(`${baseUrl}/v1/chat/jobs`, {
+            method: "POST",
+            headers: remoteHeaders(cfg),
+            body: JSON.stringify(job),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            throw new Error(`网关提交失败 HTTP ${response.status}: ${text.slice(0, 200)}`);
+        }
+        const data = await response.json().catch(() => ({})) as { ok?: boolean; job?: { id?: string }; error?: string };
+        if (!data.ok || !data.job?.id) throw new Error(data.error || "网关未返回任务 ID");
+        return data.job.id;
+    } catch (error) {
+        // 网络层失败时任务可能已在网关创建（响应丢失）。按幂等键找回，不重复生成。
+        if (job.dedupKey) {
+            try {
+                const recovered = await findRemoteJobByDedup(cfg, job.dedupKey, 3);
+                if (recovered) {
+                    console.warn("[remote-chat-client] submit failed but job recovered via dedupKey:", recovered.id);
+                    return recovered.id;
+                }
+            } catch (recoverError) {
+                console.warn("[remote-chat-client] dedup recovery failed:", recoverError);
+            }
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
     }
-    const data = await response.json().catch(() => ({})) as { ok?: boolean; job?: { id?: string }; error?: string };
-    if (!data.ok || !data.job?.id) throw new Error(data.error || "网关未返回任务 ID");
-    return data.job.id;
 }
 
 /** 查询单个任务状态。 */
@@ -119,10 +176,26 @@ export async function waitRemoteJob(cfg: RemoteGenerationSettings, jobId: string
     const startedAt = Date.now();
     let currentInterval = intervalMs;
     let lastStatus: string = "";
-
+    let consecutiveFailures = 0;
     while (true) {
         throwIfAborted(options.signal);
-        const job = await fetchRemoteJob(cfg, jobId);
+        let job: RemoteJob;
+        try {
+            job = await fetchRemoteJob(cfg, jobId);
+            consecutiveFailures = 0;
+        } catch (error) {
+            // 单次轮询失败（网络抖动/切后台恢复）不放弃：退避重试，最多连续 6 次
+            consecutiveFailures += 1;
+            if (consecutiveFailures > 6) throw error;
+            await new Promise<void>((resolve) => {
+                const timer = setTimeout(resolve, Math.min(1200 * consecutiveFailures, 6000));
+                options.signal?.addEventListener("abort", () => {
+                    clearTimeout(timer);
+                    resolve();
+                }, { once: true });
+            });
+            continue;
+        }
         if (job.status !== lastStatus) {
             lastStatus = job.status;
             try { options.onStatus?.(job); } catch { /* 回调异常不影响主流程 */ }
