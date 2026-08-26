@@ -139,7 +139,9 @@ function readBody(req) {
         req.on("data", (chunk) => {
             size += chunk.length;
             if (size > MAX_PAYLOAD_BYTES + 64 * 1024) {
-                reject(new Error("payload too large"));
+                const err = new Error("payload too large");
+                err.code = "PAYLOAD_TOO_LARGE";
+                reject(err);
                 req.destroy();
                 return;
             }
@@ -287,6 +289,9 @@ const server = http.createServer(async (req, res) => {
                         sendJson(res, 200, { ok: true, job: { id: existing.id, status: existing.status }, dedup: true });
                         return;
                     }
+                    // 旧任务已过保留期但尚未被定时清理：立即移除，避免 by-dedup 找回命中过期任务导致幂等失效
+                    jobs.delete(existing.id);
+                    try { fs.unlinkSync(jobPath(existing.id)); } catch { /* ignore */ }
                 }
             }
             const job = {
@@ -310,6 +315,10 @@ const server = http.createServer(async (req, res) => {
             console.log(`[gateway] job ${job.id} queued → ${payload.request.url}`);
             sendJson(res, 200, { ok: true, job: { id: job.id, status: job.status } });
         } catch (error) {
+            if (error?.code === "PAYLOAD_TOO_LARGE") {
+                sendJson(res, 413, { ok: false, error: `payload 超过 ${Math.round(MAX_PAYLOAD_BYTES / 1024)}KB 上限` });
+                return;
+            }
             const message = String(error?.message || error);
             sendJson(res, 400, { ok: false, error: `invalid payload: ${message}` });
         }
@@ -320,7 +329,8 @@ const server = http.createServer(async (req, res) => {
     const byDedupMatch = pathname.match(/^\/v1\/chat\/jobs\/by-dedup\/([A-Za-z0-9_-]{1,64})$/);
     if (req.method === "GET" && byDedupMatch) {
         const key = byDedupMatch[1];
-        const existing = [...jobs.values()].find((j) => j.dedupKey === key);
+        const existing = [...jobs.values()].find((j) => j.dedupKey === key
+            && !(j.finishedAt && Date.now() - Number(j.finishedAt) > JOB_TTL_MS));
         if (!existing) {
             sendJson(res, 404, { ok: false, error: "dedup key not found" });
             return;

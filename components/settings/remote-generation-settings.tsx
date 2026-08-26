@@ -79,7 +79,7 @@ export function RemoteGenerationSettings() {
                     type="url"
                     value={settings.baseUrl || ""}
                     onChange={(e) => update({ baseUrl: e.target.value })}
-                    placeholder="https://chat.43451695.xyz 或 http://1.2.3.4:8795"
+                    placeholder="https://chat.example.com 或 http://1.2.3.4:8795"
                 />
                 <span className="menu-desc ml-1 mt-0.5">
                     对应 VPS 上 vps-chat-gateway 的对外地址（支持 Caddy 反代域名或 IP:端口直连）。

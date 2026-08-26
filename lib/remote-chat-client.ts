@@ -136,20 +136,28 @@ export async function submitRemoteJob(cfg: RemoteGenerationSettings, job: Remote
     }
 }
 
-/** 查询单个任务状态。 */
+const FETCH_JOB_TIMEOUT_MS = 20_000; // 单次查询超时：网关假死（连接不断但不响应）时避免 fetch 永久挂起
+/** 查询单个任务状态。单次查询 20s 超时，超时抛 AbortError，由轮询循环按退避重试处理。 */
 export async function fetchRemoteJob(cfg: RemoteGenerationSettings, jobId: string): Promise<RemoteJob> {
     const baseUrl = normalizeRemoteBaseUrl(cfg.baseUrl || "");
-    const response = await fetch(`${baseUrl}/v1/chat/jobs/${encodeURIComponent(jobId)}`, {
-        method: "GET",
-        headers: remoteHeaders(cfg),
-    });
-    if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`网关查询失败 HTTP ${response.status}: ${text.slice(0, 200)}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_JOB_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${baseUrl}/v1/chat/jobs/${encodeURIComponent(jobId)}`, {
+            method: "GET",
+            headers: remoteHeaders(cfg),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            throw new Error(`网关查询失败 HTTP ${response.status}: ${text.slice(0, 200)}`);
+        }
+        const data = await response.json().catch(() => ({})) as { ok?: boolean; job?: RemoteJob; error?: string };
+        if (!data.ok || !data.job) throw new Error(data.error || "网关返回异常");
+        return data.job;
+    } finally {
+        clearTimeout(timer);
     }
-    const data = await response.json().catch(() => ({})) as { ok?: boolean; job?: RemoteJob; error?: string };
-    if (!data.ok || !data.job) throw new Error(data.error || "网关返回异常");
-    return data.job;
 }
 
 export type RemotePollOptions = {

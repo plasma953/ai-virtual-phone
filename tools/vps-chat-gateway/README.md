@@ -11,8 +11,8 @@
 ```bash
 # 上传本目录（scp / git 均可）
 mkdir -p ~/apps && cd ~/apps
-scp -r tools/vps-chat-gateway root@108.165.20.235:~/apps/
-ssh root@108.165.20.235
+scp -r tools/vps-chat-gateway root@your-server-ip:~/apps/
+ssh root@your-server-ip
 
 cd ~/apps/vps-chat-gateway
 
@@ -56,16 +56,16 @@ systemctl enable --now phone-chat-gateway
 systemctl status phone-chat-gateway
 ```
 
-## 2. Caddy 反代（与你的 43451695.xyz 配置一致）
+## 2. Caddy 反代（与你的 your-domain.example 配置一致）
 
 ```caddyfile
-chat.43451695.xyz {
+chat.example.com {
     reverse_proxy 127.0.0.1:8795
     encode gzip
 }
 ```
 
-然后给 `chat.43451695.xyz` 加一条 A 记录指向 `108.165.20.235`，`caddy reload`。
+然后给 `chat.example.com` 加一条 A 记录指向 `your-server-ip`，`caddy reload`。
 （域名 DNS 解析与 Caddy 站点配置按你现有的方式处理即可，无需 Cloudflare。）
 
 ## 3. 前端配置
@@ -75,7 +75,7 @@ chat.43451695.xyz {
 | 字段 | 填写 |
 |---|---|
 | 启用远程中转 | 开 |
-| 网关地址 | `https://chat.43451695.xyz`（或 `http://IP:8795`） |
+| 网关地址 | `https://chat.example.com`（或 `http://IP:8795`） |
 | 网关令牌 | 与 VPS `PHONE_GATEWAY_TOKEN` 一致 |
 
 点「测试连接」验证通过后，回到聊天即可使用。
@@ -110,5 +110,5 @@ GET /healthz
 ## 5. 常见问题
 
 - **回复很慢 / 一直排队**：看 `journalctl -u phone-chat-gateway -f`，`pending` 数是否持续增长；调整 `MAX_CONCURRENT`。
-- **前端提示「远程中转不可用，已自动改为本地生成」**：网关地址/令牌错误、VPS 未开防火墙端口，或 Caddy 证书问题；先用 `curl -H "x-phone-token: xxx" https://chat.43451695.xyz/healthz` 排障。
+- **提交后静默回落本地生成（无用户可见提示，控制台有 console.warn）**：网关地址/令牌错误、VPS 未开防火墙端口，或 Caddy 证书问题；先用 `curl -H "x-phone-token: xxx" https://chat.example.com/healthz` 排障。
 - **LLM 密钥安全**：请求快照包含 API Key 透传到 VPS。网关按 IP 排布属你自己的 VPS，风险可控；若要更严格，可把网关挂在仅自己的站点上使用并设置令牌。
