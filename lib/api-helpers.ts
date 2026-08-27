@@ -4,6 +4,7 @@
 
 import type { ApiConfig } from "./settings-types";
 import { guardFinalPayloadTotal } from "./prompt-guard";
+import { classifyHttpError, fetchWithRelayRetry } from "./relay-retry";
 
 const SIMPLE_ANTHROPIC_AUTO_MAX_TOKENS = 8192;
 
@@ -38,6 +39,24 @@ export function determineBaseUrl(config: { provider: string; baseUrl?: string })
 export function buildChatCompletionsUrl(baseUrl: string): string {
     if (baseUrl.endsWith("/chat/completions")) return baseUrl;
     return `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+}
+
+/**
+ * Catiecli 中继模型名适配（2026-08-27 生产实测）：
+ * 线上 catiecli 已全面要求渠道前缀 —— GeminiCLI 渠道为 gcli-、
+ * Antigravity 渠道为 agy-。裸模型名（如 gemini-3.1-pro-preview）
+ * 会直接 404「未知或不可用模型」。此处对 catiecli 端点自动补前缀：
+ * 已带 gcli-/agy- 前缀的原样放行，其余裸名统一补 gcli-。
+ * 其他端点不做任何改写，保持零副作用。
+ */
+export function resolveRelayModelName(config: { defaultModel?: string; baseUrl?: string }, baseUrl?: string): string {
+    const model = (config.defaultModel || "").trim();
+    if (!model) return model;
+    const url = baseUrl ?? config.baseUrl ?? "";
+    const isCatiecli = /catiecli/i.test(url);
+    if (!isCatiecli) return model;
+    if (/^(gcli|agy)-/i.test(model)) return model;
+    return `gcli-${model}`;
 }
 
 /**
@@ -100,10 +119,9 @@ export async function simpleLLMCall(
     messages: { role: string; content: string }[],
     options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal },
 ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
-    // 防线下沉（#sym:500 第二阶段）：simpleLLMCall 是记忆总结、NPC 生成等
-    // 全部后台任务的公共通道，此前完全裸奔于 prompt-guard 之外。
-    // 现在在构造 body 前统一走双轨总闸（字符+字节），就地裁剪超限消息，
-    // 保证任何后台路径发出的 POST body 物理体积都被锁死在网关容差内。
+    // 总闸（保留为最后兜底，2026-08-27 纠偏）：simpleLLMCall 是记忆总结、
+    // NPC 生成等全部后台任务的公共通道。生产实测体积并非 #sym:500 诱因，
+    // 默认阈值已大幅放宽；此总闸仅在极端超限时介入，锁定网关容差内。
     const guardCut = guardFinalPayloadTotal(messages);
     if (guardCut > 0) {
         console.warn("[simpleLLMCall] 总闸裁剪了 " + guardCut + " 字符（字符+字节双轨记账）");
@@ -129,7 +147,7 @@ export async function simpleLLMCall(
                 .map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
             const systemMsg = messages.find(m => m.role === "system");
             body = JSON.stringify({
-                model: config.defaultModel,
+                model: resolveRelayModelName(config, baseUrl),
                 messages: anthropicMessages,
                 ...(systemMsg ? { system: systemMsg.content } : {}),
                 temperature,
@@ -139,7 +157,7 @@ export async function simpleLLMCall(
             });
         } else if (isNativeGoogleApi(config)) {
             // Google Gemini API
-            fetchUrl = `${baseUrl.replace(/\/$/, "")}/models/${config.defaultModel}:generateContent?key=${config.apiKey}`;
+            fetchUrl = `${baseUrl.replace(/\/$/, "")}/models/${resolveRelayModelName(config, baseUrl)}:generateContent?key=${config.apiKey}`;
             // Remove Authorization header for Gemini (uses URL key)
             delete headers["Authorization"];
             const parts = messages.map(m => ({
@@ -157,7 +175,7 @@ export async function simpleLLMCall(
             // OpenAI-compatible (all others including proxies/relays/custom)
             fetchUrl = buildChatCompletionsUrl(baseUrl);
             body = JSON.stringify({
-                model: config.defaultModel,
+                model: resolveRelayModelName(config, baseUrl),
                 messages,
                 temperature,
                 ...(max_tokens ? { max_tokens } : {}),
@@ -168,12 +186,15 @@ export async function simpleLLMCall(
         const bodyTokenEstimate = Math.ceil(bodySize / 3);
         console.log("[simpleLLMCall] Request:", { url: fetchUrl.slice(0, 80), bodySize, bodyTokenEstimate, model: config.defaultModel });
 
-        const res = await fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal });
+        const res = await fetchWithRelayRetry(
+            () => fetch(fetchUrl, { method: "POST", headers, body, signal: options?.signal }),
+            options?.signal,
+        );
 
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
             console.warn("[simpleLLMCall] API error:", res.status, errText.slice(0, 300));
-            return { content: null, error: `API 错误 ${res.status}: ${errText.slice(0, 200)}` };
+            return { content: null, error: classifyHttpError(res.status, errText, fetchUrl) };
         }
 
         const data = await res.json();

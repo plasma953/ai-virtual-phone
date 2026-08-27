@@ -7,6 +7,7 @@ import {
     determineBaseUrl,
     isNativeAnthropicApi,
     isNativeGoogleApi,
+    resolveRelayModelName,
     stripHallucinatedTimestamps,
 } from "./api-helpers";
 
@@ -95,6 +96,9 @@ export function providerKindForConfig(config: ApiConfig, options?: { nativeToolP
     if (isNativeGoogleApi(config)) return "gemini";
     return "openai-compatible";
 }
+
+// Catiecli 中继模型名适配（gcli-/agy- 渠道前缀）—— 单一实现见 api-helpers.resolveRelayModelName
+export { resolveRelayModelName };
 
 export function toLlmRequestMessages(messages: LLMMessage[]): LlmRequestMessage[] {
     return messages.map((message) => {
@@ -257,10 +261,9 @@ export function buildProviderRequest(
     // "[图片]" 文本，避免不支持视觉的模型（如 DeepSeek）收到 multipart 返回 400。
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
     const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
-    // 总闸下沉（#sym:500 第二阶段）：buildProviderRequest 是主聊天与 surf-engine 等
-    // 后台引擎的公共出口。surf-engine 等路径不经过 chat-engine 的预设组装，
-    // 此前以裸 messages 直发，完全游离于 prompt-guard 之外。此处统一执行
-    // 字符+字节双轨总闸，就地裁剪超限消息，彻底消灭防线外领地。
+    // 总闸（公共出口兜底，2026-08-27 纠偏）：buildProviderRequest 是主聊天与
+    // surf-engine 等后台引擎的公共出口，统一执行字符+字节双轨总闸。生产实测
+    // 体积并非 #sym:500 诱因，默认阈值已大幅放宽；仅在极端超限时兜底裁剪。
     guardFinalPayloadTotal(providerMessages);
 
     if (providerKind === "anthropic") {
@@ -493,7 +496,7 @@ function buildOpenAICompatibleRequest(
 ): LlmRequestPayload {
     const sanitizeToolSchemaEnums = shouldStringifyToolSchemaEnums(config, baseUrl);
     const body: Record<string, unknown> = {
-        model: config.defaultModel,
+        model: resolveRelayModelName(config, baseUrl),
         messages: messages.map((message) => {
             if (message.role === "tool") {
                 return {
@@ -568,7 +571,7 @@ function buildAnthropicRequest(
     const { systemText: system, rest } = splitLeadingSystemMessages(messages);
     const bodyMessages = compactAnthropicMessages(rest);
     const body: Record<string, unknown> = {
-        model: config.defaultModel,
+        model: resolveRelayModelName(config, baseUrl),
         messages: bodyMessages,
         temperature: preset?.temperature ?? 0.8,
         max_tokens: options.maxTokens && options.maxTokens > 0
@@ -666,7 +669,7 @@ function buildGeminiRequest(
         ? `streamGenerateContent?alt=sse&key=${encodeURIComponent(config.apiKey)}`
         : `generateContent?key=${encodeURIComponent(config.apiKey)}`;
     return {
-        url: `${baseUrl.replace(/\/$/, "")}/models/${config.defaultModel}:${method}`,
+        url: `${baseUrl.replace(/\/$/, "")}/models/${resolveRelayModelName(config, baseUrl)}:${method}`,
         headers,
         body,
         providerKind: "gemini",

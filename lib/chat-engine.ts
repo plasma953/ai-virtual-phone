@@ -54,6 +54,7 @@ import {
 } from "./llm-provider-adapter";
 import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
 import { extractFinishReason } from "./api-helpers";
+import { classifyHttpError, fetchWithRelayRetry } from "./relay-retry";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
@@ -812,15 +813,15 @@ export async function sendLLMStreamRequest(
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
-        const response = await fetch(request.url, {
+        const response = await fetchWithRelayRetry(() => fetch(request.url, {
             method: "POST",
             headers: request.headers,
             body: requestBodyJson,
             signal: llmAbort.signal,
-        });
+        }), options?.signal);
         if (!response.ok) {
             const errorText = await response.text();
-            throw new ChatEngineError(`API Stream Error ${response.status}: ${errorText}`);
+            throw new ChatEngineError(classifyHttpError(response.status, errorText, request.url));
         }
         const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, pluginCallbacks ?? callbacks, !options?.skipTimestampStrip);
         if (!streamedContent.trim()) {
@@ -929,16 +930,16 @@ export async function sendLLMRequest(
     const detachExternalAbort = attachExternalAbort(llmAbort, options?.signal);
 
     try {
-        const response = await fetch(request.url, {
+        const response = await fetchWithRelayRetry(() => fetch(request.url, {
             method: "POST",
             headers: request.headers,
             body: requestBodyJson,
             signal: llmAbort.signal,
-        });
+        }), options?.signal);
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new ChatEngineError(`API Error ${response.status}: ${errorText}`);
+            throw new ChatEngineError(classifyHttpError(response.status, errorText, request.url));
         }
 
         const data = await response.json();

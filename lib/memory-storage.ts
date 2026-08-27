@@ -181,12 +181,17 @@ export function loadMemoryConfig(): MemoryConfig {
         const raw = kvGet(CONFIG_KEY);
         if (!raw) return { ...DEFAULT_MEMORY_CONFIG };
         const stored = { ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) };
-        // 旧默认纠偏（#sym:500 第二阶段）：900000 是历史默认总量预算，
-        // 存量用户从未主动调整过的配置会以旧值覆盖新默认 300000，
-        // 使收紧后的总闸形同虚设。此处把"恰好等于旧默认"视为未自定义，
-        // 统一纠偏到新默认；用户主动设置的其他数值不受影响。
-        if (stored.promptGuardTotalChars === 900000) {
+        // 旧默认纠偏（#sym:500 溯源纠偏 2026-08-27）：生产实测确认体积并非
+        // #sym:500 诱因（2.6MB 多轮历史稳定通过），此前收紧的默认值
+        // （总量 900000/300000、单条软限 12000）会把合并后的历史消息大量折叠，
+        // 严重破坏角色扮演体验。此处把「恰好等于历史收紧默认」视为未自定义，
+        // 统一纠偏到宽松新默认；用户主动设置的其他数值不受影响。
+        if (stored.promptGuardTotalChars === 900000
+            || stored.promptGuardTotalChars === 300000) {
             stored.promptGuardTotalChars = DEFAULT_MEMORY_CONFIG.promptGuardTotalChars;
+        }
+        if (stored.promptGuardSoftChars === 12000) {
+            stored.promptGuardSoftChars = DEFAULT_MEMORY_CONFIG.promptGuardSoftChars;
         }
         return stored;
     } catch {

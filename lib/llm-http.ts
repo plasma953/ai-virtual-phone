@@ -16,10 +16,10 @@ export function fetchLlmPayload(
     options: FetchLlmPayloadOptions = {},
 ): Promise<Response> {
     const bodyText = JSON.stringify(payload.body);
-    // 物理保险丝（#sym:500 最后防线）：正常路径在 buildProviderRequest /
-    // simpleLLMCall 内已被双轨总闸裁剪，此处不应触发。一旦触发说明存在
-    // 未知新路径绕过了钳制——宁可熔断单次请求，也不允许超限 body 打爆
-    // VPS 网关（4MB 容差）造成全局链路 500。
+    // 物理保险丝（最后兜底，2026-08-27 纠偏）：正常路径在 buildProviderRequest /
+    // simpleLLMCall 内已被双轨总闸裁剪，此处不应触发。生产实测体积并非
+    // #sym:500 诱因（2.6MB 多轮历史稳定通过），硬帽已上抬至 3.5MB，
+    // 仅在逼近网关 4MB 容差前熔断单次请求，保护整条链路。
     const bodyBytes = new TextEncoder().encode(bodyText).length;
     if (bodyBytes > TOTAL_BYTES_ABS_CAP) {
         console.error(
