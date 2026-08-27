@@ -35,7 +35,6 @@ import {
 } from "./llm-provider-adapter";
 import { fetchLlmPayload } from "./llm-http";
 import { loadChatSessions, loadChatMessages } from "./chat-storage";
-import { MacroEngine } from "./macro-engine";
 
 // ── n-gram 反刍闸 ────────────────────────────────────────────────────────────
 // 中文按字滑窗、英文按单词滑窗、数字串整体成一个 token。
@@ -292,29 +291,6 @@ async function distillNote(
     };
 }
 
-export type ShareVerdict = { share: boolean; text: string };
-
-async function decideShare(
-    settings: SurfSettings,
-    config: ReturnType<typeof loadApiConfigs>[number],
-    note: SurfNote,
-    signal?: AbortSignal,
-): Promise<ShareVerdict> {
-    const prompt =
-        `${settings.sharePolicyPrompt}\n\n` +
-        `候选见闻：\n标题：${note.title}\n摘要：${note.summary}\n` +
-        `亮点：${note.insights.join("；") || "（无）"}\n来源：${note.sourceUrls.slice(0, 3).join(" ")}`;
-    try {
-        const text = await callLlmOnce(config, prompt, { signal, maxTokens: 500 });
-        const obj = extractJsonObject(text);
-        const share = obj?.share === true;
-        const shareText = typeof obj?.text === "string" ? obj.text.trim() : "";
-        return { share, text: shareText || note.shareText || note.summary };
-    } catch {
-        return { share: false, text: "" };
-    }
-}
-
 // ── 静默时段（独立于全局推送设置，可跨午夜） ────────────────────────────────
 export function isWithinSurfQuietHours(atMs: number, start: string, end: string): boolean {
     const m = (s: string): number => {
@@ -333,18 +309,6 @@ export function isWithinSurfQuietHours(atMs: number, start: string, end: string)
     return startMinutes < endMinutes
         ? nowMinutes >= startMinutes && nowMinutes < endMinutes
         : nowMinutes >= startMinutes || nowMinutes < endMinutes;
-}
-// ── 宏展开：分享文案支持 AIVP 标准宏（{{user}} / {{char}} / {{time}} 等） ────
-// 冲浪分享不绑定角色卡：char 固定为 AI 自身，user 取用户身份名，均与聊天上下文解耦。
-export function expandSurfShareText(text: string): string {
-    try {
-        const userName = resolveUserIdentity()?.name || "用户";
-        const engine = new MacroEngine("AI", userName);
-        engine.timeContext = "";
-        return engine.expand(text);
-    } catch {
-        return text;
-    }
 }
 export async function lastUserMessageAt(): Promise<number | null> {
     if (typeof window === "undefined") return null;
@@ -429,16 +393,11 @@ export async function runSurfRound(trigger: SurfTrigger): Promise<string> {
             if (!candidates.length) {
                 return finish("想分享但没有未分享的见闻，转为休息");
             }
-            const verdict = await decideShare(settings, config, candidates[0]);
-            if (!verdict.share) return finish(`分享决策为否：不打扰`);
+            // 对话注入模式：不再派发系统横幅，见闻由 buildSurfContextForPrompt 在聊天中自然带出
             const chosen = candidates[0];
-            const body = expandSurfShareText(verdict.text.slice(0, 1500));
-            dispatchSurfShareNotice({ noteId: chosen.id, title: chosen.title, body });
-            const updated = notes.map(n => n.id === chosen.id ? { ...n, sharedAt: Date.now() } : n);
-            saveSurfNotes(updated);
             state0.totalShared++;
             saveSurfState({ ...state0 });
-            return finish(`已分享见闻「${chosen.title.slice(0, 30)}」（独立通知，未写入聊天）`);
+            return finish(`已有见闻「${chosen.title.slice(0, 30)}」，将在后续对话中自然带出`);
         }
 
         // 2) surf：反刍闸 + 禁区，撞车时换题一次
@@ -486,19 +445,12 @@ export async function runSurfRound(trigger: SurfTrigger): Promise<string> {
         state1.totalNotes++;
         saveSurfState(state1);
 
-        // 5) 分享（见闻值得分享 + 开启自动分享 + 非静默时段）
+        // 5) 分享（对话注入模式：不派发系统通知，见闻保持待注入状态，由 buildSurfContextForPrompt 在聊天中自然带出）
         if (note.worthSharing && settings.autoShare && !quiet) {
-            const verdict = await decideShare(settings, config, note);
-            if (verdict.share) {
-                const body = expandSurfShareText(verdict.text.slice(0, 1500));
-                dispatchSurfShareNotice({ noteId: note.id, title: note.title, body });
-                const updatedNotes = loadSurfNotes().map(n => n.id === note.id ? { ...n, sharedAt: Date.now() } : n);
-                saveSurfNotes(updatedNotes);
-                const state2 = loadSurfState();
-                state2.totalShared++;
-                saveSurfState(state2);
-                return finish(`冲浪完成并已分享「${note.title.slice(0, 30)}」（独立通知，未写入聊天）`);
-            }
+            const state2 = loadSurfState();
+            state2.totalShared++;
+            saveSurfState(state2);
+            return finish(`冲浪完成：沉淀见闻「${note.title.slice(0, 30)}」，将在后续对话中自然带出`);
         }
         return finish(`冲浪完成：沉淀见闻「${note.title.slice(0, 30)}」${quiet ? "（静默时段，未推送）" : ""}`);
     } catch (error: unknown) {

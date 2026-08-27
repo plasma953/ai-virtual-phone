@@ -11,6 +11,7 @@ import {
 } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { simpleLLMCall } from "./api-helpers";
+import { DEFAULT_INITIAL_HEAT } from "./memory-heat";
 
 const coreBuildingSet = new Set<string>();
 
@@ -124,6 +125,10 @@ export async function runCoreMemoryPipeline(
         importance: 0.95,
         createdAt: now,
         updatedAt: now,
+        // Kiwi-style: 核心记忆同样以初始热度落库（核心记忆不参与 Dream 整合，只参与排序）
+        heat: DEFAULT_INITIAL_HEAT,
+        heatUpdatedAt: now,
+        accessCount: 0,
         metadata: {
             summarizedLongTermEntries: entries.length,
             timeSpan: `${earliest} ~ ${latest}`,

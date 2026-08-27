@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { Toggle } from "@/components/ui/form";
@@ -406,6 +406,12 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         } finally {
             setRebuildingCore(false);
         }
+    };
+
+    const updateConfig = (patch: Partial<MemoryConfig>) => {
+        const next = { ...config, ...patch };
+        setConfig(next);
+        saveMemoryConfig(next);
     };
 
     const saveBudget = (key: MemoryBudgetKey, value: number) => {
@@ -1001,6 +1007,134 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             }} />
                         </div>
                     </div>
+                </div>
+
+                {/* ── Kiwi heat engine ── */}
+                <p className="menu-group-desc mx-2">记忆热度引擎</p>
+                <div className="menu-group">
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={Flame} color={BINDING_ACCENTS.memory} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">记忆热度系统</span>
+                            <span className="menu-desc">高频记忆更易被唤醒，随时间自然遗忘（人脑化）</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle checked={config.heatEnabled ?? true} onChange={(v) => {
+                                updateConfig({ heatEnabled: v });
+                            }} />
+                        </div>
+                    </div>
+                    <MemorySettingsSliderItem
+                        icon={Flame}
+                        color={BINDING_ACCENTS.memory}
+                        label="召回热度提升"
+                        desc="每次召回时热度的提升量（饱和式增长）"
+                        value={config.heatBoostOnRecall ?? 0.18}
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        onChange={value => updateConfig({ heatBoostOnRecall: value })}
+                    />
+                    <MemorySettingsSliderItem
+                        icon={Clock}
+                        color={BINDING_ACCENTS.voice}
+                        label="遗忘半衰期"
+                        desc="热度每经过 N 天自然减半（天）"
+                        value={config.heatHalfLifeDays ?? 7}
+                        min={1}
+                        max={30}
+                        step={1}
+                        onChange={value => updateConfig({ heatHalfLifeDays: value })}
+                    />
+                    <MemorySettingsSliderItem
+                        icon={Search}
+                        color={BINDING_ACCENTS.embedding}
+                        label="热度排序权重"
+                        desc="检索排序中热度的占比（其余为向量相似度）"
+                        value={config.heatWeightInRanking ?? 0.35}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        onChange={value => updateConfig({ heatWeightInRanking: value })}
+                    />
+                </div>
+
+                {/* ── Dream consolidation ── */}
+                <p className="menu-group-desc mx-2">记忆梦境整理</p>
+                <div className="menu-group">
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={Moon} color={BINDING_ACCENTS.preset} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">梦境整合（Dream）</span>
+                            <span className="menu-desc">定期压缩低热度碎片记忆，提炼成高浓度记忆</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle checked={config.dreamEnabled ?? true} onChange={(v) => {
+                                updateConfig({ dreamEnabled: v });
+                            }} />
+                        </div>
+                    </div>
+                    <MemorySettingsSliderItem
+                        icon={Moon}
+                        color={BINDING_ACCENTS.preset}
+                        label="整合间隔"
+                        desc="每 N 天触发一次碎片压缩（天）"
+                        value={config.dreamIntervalDays ?? 3}
+                        min={1}
+                        max={14}
+                        step={1}
+                        onChange={value => updateConfig({ dreamIntervalDays: value })}
+                    />
+                    <MemorySettingsSliderItem
+                        icon={Archive}
+                        color={BINDING_ACCENTS.memory}
+                        label="冷热度阈值"
+                        desc="热度低于此值的记忆才有资格被整合"
+                        value={config.dreamColdHeatThreshold ?? 0.3}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        onChange={value => updateConfig({ dreamColdHeatThreshold: value })}
+                    />
+                    <MemorySettingsSliderItem
+                        icon={Users}
+                        color={BINDING_ACCENTS.voice}
+                        label="最小碎片数"
+                        desc="单次整合至少需要多少条碎片"
+                        value={config.dreamMinFragments ?? 5}
+                        min={2}
+                        max={20}
+                        step={1}
+                        onChange={value => updateConfig({ dreamMinFragments: value })}
+                    />
+                </div>
+
+                {/* ── Calendar summary ── */}
+                <p className="menu-group-desc mx-2">日历分层摘要</p>
+                <div className="menu-group">
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={CalendarDays} color={BINDING_ACCENTS.api} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">日历套娃摘要</span>
+                            <span className="menu-desc">注入时按 今天/本周/本月/更早 分层展示记忆</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle checked={config.calendarSummaryEnabled ?? false} onChange={(v) => {
+                                updateConfig({ calendarSummaryEnabled: v });
+                            }} />
+                        </div>
+                    </div>
+                    <MemorySettingsSliderItem
+                        icon={CalendarDays}
+                        color={BINDING_ACCENTS.api}
+                        label="摘要预算"
+                        desc="日历分层摘要占用的 token 预算"
+                        value={config.calendarSummaryTokenBudget ?? 1500}
+                        min={500}
+                        max={20000}
+                        step={500}
+                        onChange={value => updateConfig({ calendarSummaryTokenBudget: value })}
+                    />
                 </div>
 
                 {/* Token budget sliders */}

@@ -134,7 +134,7 @@ import { loadCharacters } from "@/lib/character-storage";
 import { generateChatCompletion, flattenCompletionResult } from "@/lib/chat-engine";
 import { parseAIResponse } from "@/lib/rich-message-parser";
 import { requestBackgroundChatReply, scheduleFollowUp } from "@/lib/follow-up-service";
-import { CHAT_MESSAGE_NOTICE_EVENT, CHAT_OPEN_SESSION_EVENT, SURF_SHARE_NOTICE_EVENT, type ChatMessageNoticeDetail, type SurfShareNoticeDetail } from "@/lib/chat-notification-events";
+import { CHAT_MESSAGE_NOTICE_EVENT, CHAT_OPEN_SESSION_EVENT, type ChatMessageNoticeDetail } from "@/lib/chat-notification-events";
 import { startIncomingCallVibration } from "@/lib/call-vibration";
 import { setMascotContext } from "@/lib/mascot-context";
 import { DESKTOP_WIDGETS_CHANGED_EVENT } from "@/lib/mascot-events";
@@ -1117,9 +1117,6 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     isGroup?: boolean;
   } | null>(null);
   const chatMessageNoticeTimerRef = useRef<number | null>(null);
-  // 自主冲浪见闻横幅：独立于聊天消息横幅的通知通道（点击跳转见闻库，绝不污染聊天流）
-  const [surfShareNotice, setSurfShareNotice] = useState<SurfShareNoticeDetail | null>(null);
-  const surfShareNoticeTimerRef = useRef<number | null>(null);
   // Swipe-up-to-dismiss state for the chat message notice banner.
   const [noticeDragY, setNoticeDragY] = useState(0);
   const noticeDragRef = useRef({ startY: 0, dy: 0, dragging: false, far: false });
@@ -2471,22 +2468,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       window.dispatchEvent(new CustomEvent(CHAT_OPEN_SESSION_EVENT, { detail: { sessionId } }));
     }, 0);
   }, []);
-  // 点击冲浪见闻横幅：写入深链标记 -> 打开设置 app 的「自主冲浪」页 -> 定位高亮对应见闻
-  const openSurfNoteFromNotice = useCallback((noteId?: string) => {
-    if (surfShareNoticeTimerRef.current !== null) {
-      window.clearTimeout(surfShareNoticeTimerRef.current);
-      surfShareNoticeTimerRef.current = null;
-    }
-    setSurfShareNotice(null);
-    try {
-      if (noteId) sessionStorage.setItem("surf-note-focus", noteId);
-      else sessionStorage.removeItem("surf-note-focus");
-    } catch { /* ignore */ }
-    // 已挂载的设置页直接切换子页；未挂载时由挂载 effect 读取深链标记兜底
-    window.dispatchEvent(new CustomEvent("settings-navigate", { detail: { page: "surf" } }));
-    window.dispatchEvent(new CustomEvent("surf-focus-note", { detail: { noteId } }));
-    setActiveApp("settings" as IconId);
-  }, []);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2604,23 +2585,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     window.addEventListener(CHAT_MESSAGE_NOTICE_EVENT, handler);
     return () => window.removeEventListener(CHAT_MESSAGE_NOTICE_EVENT, handler);
   }, [activeApp, activeChatSession?.id, showMiniChat]);
-  // 冲浪见闻通知消费端：纯横幅呈现，不触碰任何聊天会话
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<SurfShareNoticeDetail>).detail;
-      if (!detail?.title || !detail.body?.trim()) return;
-      if (surfShareNoticeTimerRef.current !== null) {
-        window.clearTimeout(surfShareNoticeTimerRef.current);
-      }
-      setSurfShareNotice({ noteId: detail.noteId, title: detail.title, body: detail.body.trim() });
-      surfShareNoticeTimerRef.current = window.setTimeout(() => {
-        setSurfShareNotice(null);
-        surfShareNoticeTimerRef.current = null;
-      }, 6000);
-    };
-    window.addEventListener(SURF_SHARE_NOTICE_EVENT, handler);
-    return () => window.removeEventListener(SURF_SHARE_NOTICE_EVENT, handler);
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -4490,25 +4454,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                 </button>
               ) : null}
 
-              {surfShareNotice && !incomingCall && !chatMessageNotice ? (
-                <button
-                  type="button"
-                  className="chat-message-notice-bar surf-share-notice-bar"
-                  onClick={() => openSurfNoteFromNotice(surfShareNotice.noteId)}
-                  aria-label={`查看 AI 见闻：${surfShareNotice.title}`}
-                >
-                  <div className="chat-message-notice-info">
-                    <span className="chat-message-notice-avatar chat-message-notice-avatar-fallback surf-share-notice-avatar">
-                      AI
-                    </span>
-                    <div className="chat-message-notice-text">
-                      <span className="chat-message-notice-name">AI 见闻 · {surfShareNotice.title}</span>
-                      <span className="chat-message-notice-body">{surfShareNotice.body}</span>
-                    </div>
-                  </div>
-                  <span className="chat-message-notice-action">查看</span>
-                </button>
-              ) : null}
               {/* Music custom CSS — injected at shell level so it persists across apps */}
               {musicCustomCss && <style dangerouslySetInnerHTML={{ __html: musicCustomCss }} />}
 

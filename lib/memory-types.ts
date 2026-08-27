@@ -14,6 +14,19 @@ export type MemoryEntry = {
     updatedAt: string;
     sourceMessageIds?: string[];
     metadata?: Record<string, unknown>;
+    // ── Kiwi-style "human brain" memory fields ──
+    /** 记忆热度 0-1：访问越频繁越高，随时间指数衰减（模拟人脑「记得牢」） */
+    heat?: number;
+    /** 上次热度更新时间（用于计算衰减） */
+    heatUpdatedAt?: string;
+    /** 累计被召回的次数 */
+    accessCount?: number;
+    /** 上次被召回的时间 */
+    lastAccessedAt?: string;
+    /** 是否已被 Dream 整合压缩过（压缩产物标记为 true） */
+    dreamCompacted?: boolean;
+    /** Dream 产物：指向被整合的源记忆 ID 列表 */
+    originIds?: string[];
 };
 
 export type MemoryConfig = {
@@ -29,6 +42,29 @@ export type MemoryConfig = {
     summarizationPrompt: string;            // user-editable prompt template for memory summarization
     coreMemoryPrompt: string;               // user-editable prompt template for core-memory extraction
     vnSummaryPrompt: string;                // user-editable prompt for VN chapter summarization
+    // ── Kiwi-style heat system ──
+    /** 热度系统开关：检索排序时叠加 heat 加权 + 召回后热度提升 */
+    heatEnabled: boolean;
+    /** 每次召回时热度的提升量（饱和式：heat + boost*(1-heat)） */
+    heatBoostOnRecall: number;
+    /** 热度半衰期（天）：热度每经过该时长自然减半（模拟遗忘曲线） */
+    heatHalfLifeDays: number;
+    /** 热度在检索排序中的权重 0-1（剩余的权重给向量相似度） */
+    heatWeightInRanking: number;
+    // ── Kiwi-style Dream consolidation ──
+    /** Dream 整合开关：定期把低热度碎片记忆压缩提炼成高浓度记忆 */
+    dreamEnabled: boolean;
+    /** Dream 整合最小间隔（天） */
+    dreamIntervalDays: number;
+    /** 热度低于此值的长期记忆才有资格被 Dream 整合 */
+    dreamColdHeatThreshold: number;
+    /** Dream 单次整合的最小碎片数量 */
+    dreamMinFragments: number;
+    // ── Calendar summary injection ──
+    /** 日历套娃摘要开关：注入时按 今天/本周/本月 分层摘要 */
+    calendarSummaryEnabled: boolean;
+    /** 日历摘要的 token 预算 */
+    calendarSummaryTokenBudget: number;
     shortTermAllowedSources?: {
         chat?: boolean;
         group_chat?: boolean;
@@ -116,6 +152,16 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     summarizationPrompt: DEFAULT_SUMMARIZATION_PROMPT,
     coreMemoryPrompt: DEFAULT_CORE_MEMORY_PROMPT,
     vnSummaryPrompt: "",
+    heatEnabled: true,
+    heatBoostOnRecall: 0.18,
+    heatHalfLifeDays: 7,
+    heatWeightInRanking: 0.35,
+    dreamEnabled: true,
+    dreamIntervalDays: 3,
+    dreamColdHeatThreshold: 0.3,
+    dreamMinFragments: 5,
+    calendarSummaryEnabled: false,
+    calendarSummaryTokenBudget: 1500,
     shortTermAllowedSources: {
         chat: true,
         group_chat: true,

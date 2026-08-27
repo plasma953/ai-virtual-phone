@@ -197,11 +197,13 @@ const EVENT_COUNTER_PREFIX = "ai_phone_mem_evt_count_";
 const LAST_SUMMARY_TS_PREFIX = "ai_phone_mem_last_sum_";
 const CORE_COUNTER_PREFIX = "ai_phone_mem_core_count_";
 const LAST_CORE_SUMMARY_TS_PREFIX = "ai_phone_mem_last_core_sum_";
+const LAST_DREAM_TS_PREFIX = "ai_phone_mem_last_dream_";
 registerKvMigration(CONFIG_KEY);
 registerDynamicPrefix(EVENT_COUNTER_PREFIX);
 registerDynamicPrefix(LAST_SUMMARY_TS_PREFIX);
 registerDynamicPrefix(CORE_COUNTER_PREFIX);
 registerDynamicPrefix(LAST_CORE_SUMMARY_TS_PREFIX);
+registerDynamicPrefix(LAST_DREAM_TS_PREFIX);
 
 export function getEventCounter(characterId: string): number {
     if (typeof window === "undefined") return 0;
@@ -259,4 +261,35 @@ export function getLastCoreSummarizedTimestamp(characterId: string): string | nu
 export function setLastCoreSummarizedTimestamp(characterId: string, ts: string): void {
     if (typeof window === "undefined") return;
     kvSet(LAST_CORE_SUMMARY_TS_PREFIX + characterId, ts);
+}
+
+// ── Dream consolidation watermark (localStorage) ──
+
+export function getLastDreamTimestamp(characterId: string): string | null {
+    if (typeof window === "undefined") return null;
+    return kvGet(LAST_DREAM_TS_PREFIX + characterId) || null;
+}
+
+export function setLastDreamTimestamp(characterId: string, ts: string): void {
+    if (typeof window === "undefined") return;
+    kvSet(LAST_DREAM_TS_PREFIX + characterId, ts);
+}
+
+/**
+ * 热度追踪持久化：更新某条记忆的 heat/accessCount/lastAccessedAt。
+ * 只改热度相关字段，保持 createdAt/updatedAt 原义不变（updatedAt 表示内容更新时间）。
+ */
+export async function saveMemoryHeat(entry: MemoryEntry): Promise<void> {
+    const db = await openDb();
+    if (!db) return;
+    try {
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        tx.objectStore(STORE_NAME).put(entry);
+        await new Promise<void>((res, rej) => {
+            tx.oncomplete = () => res();
+            tx.onerror = () => rej(tx.error);
+        });
+    } finally {
+        db.close();
+    }
 }

@@ -20,6 +20,8 @@ import { loadNativeTimeline, formatTimelineForSummarization, filterTimelineByAll
 import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
 import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
+import { maybeRunDreamConsolidation } from "./memory-dream";
+import { DEFAULT_INITIAL_HEAT } from "./memory-heat";
 
 /** Per-character lock to prevent concurrent summarization. */
 const summarizingSet = new Set<string>();
@@ -157,6 +159,10 @@ export async function runSummarizationPipeline(
         importance: 0.8,
         createdAt: now,
         updatedAt: now,
+        // Kiwi-style: 新记忆带着初始热度落库，从"新鲜"状态开始衰减
+        heat: DEFAULT_INITIAL_HEAT,
+        heatUpdatedAt: now,
+        accessCount: 0,
         metadata: {
             summarizedEvents: allEntries.length,
             timeSpan: `${earliest} ~ ${latest}`,
@@ -178,6 +184,12 @@ export async function runSummarizationPipeline(
 
     incrementCoreMemoryCounter(characterId);
     await maybeRunCoreMemoryPipeline(characterId, characterName);
+
+    // Kiwi-style Dream: 总结流水线完成后，顺手检查是否需要「睡眠式整合」
+    // 把久未被想起的低热度碎片记忆压缩提炼成高浓度长期记忆（fire-and-forget）
+    await maybeRunDreamConsolidation(characterId, characterName).catch(err => {
+        console.warn("[MemoryDream] Consolidation skipped:", err);
+    });
 
     console.log(`[MemorySummarizer] Summarized ${allEntries.length} entries → 1 long-term memory`);
     return { success: true };
