@@ -5,7 +5,6 @@
 //    绕过 opencode.ai 未开放浏览器 CORS 的问题。
 
 import type { LlmRequestPayload } from "./llm-provider-adapter";
-import { TOTAL_BYTES_ABS_CAP } from "./prompt-guard";
 
 export type FetchLlmPayloadOptions = {
     signal?: AbortSignal;
@@ -16,23 +15,9 @@ export function fetchLlmPayload(
     options: FetchLlmPayloadOptions = {},
 ): Promise<Response> {
     const bodyText = JSON.stringify(payload.body);
-    // 物理保险丝（最后兜底，2026-08-27 纠偏）：正常路径在 buildProviderRequest /
-    // simpleLLMCall 内已被双轨总闸裁剪，此处不应触发。生产实测体积并非
-    // #sym:500 诱因（2.6MB 多轮历史稳定通过），硬帽已上抬至 3.5MB，
-    // 仅在逼近网关 4MB 容差前熔断单次请求，保护整条链路。
-    const bodyBytes = new TextEncoder().encode(bodyText).length;
-    if (bodyBytes > TOTAL_BYTES_ABS_CAP) {
-        console.error(
-            "[fetchLlmPayload] fuse blown: body " + bodyBytes +
-            " bytes > cap " + TOTAL_BYTES_ABS_CAP + ", refused. URL=" + payload.url.slice(0, 120),
-        );
-        return Promise.resolve(new Response(JSON.stringify({
-            error: "payload_too_large",
-            message: "request body exceeds gateway physical cap, fused locally",
-            bodyBytes,
-            capBytes: TOTAL_BYTES_ABS_CAP,
-        }), { status: 413, headers: { "Content-Type": "application/json" } }));
-    }
+    // 体积熔断已按用户要求删除（2026-08-27）：正常聊天到不了百万字符量级，
+    // 此前 2MB/3.5MB 保险丝会以 413 拒绝请求，属于多余的物理限制。
+    // 请求体一律原样直发，由上游自行裁决。
     if (payload.serverProxy) {
         return fetch("/api/llm-proxy", {
             method: "POST",
