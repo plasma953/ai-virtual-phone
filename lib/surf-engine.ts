@@ -35,9 +35,7 @@ import {
 } from "./llm-provider-adapter";
 import { fetchLlmPayload } from "./llm-http";
 import { loadChatSessions, loadChatMessages } from "./chat-storage";
-import { dispatchSurfShareNotice } from "./chat-notification-events";
 import { MacroEngine } from "./macro-engine";
-import { resolveUserIdentity } from "./settings-storage";
 
 // ── n-gram 反刍闸 ────────────────────────────────────────────────────────────
 // 中文按字滑窗、英文按单词滑窗、数字串整体成一个 token。

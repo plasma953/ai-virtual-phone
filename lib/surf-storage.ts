@@ -96,6 +96,10 @@ export type SurfNote = {
     shareText?: string;
     createdAt: number;
     sharedAt?: number;
+    /** 最近一次注入聊天 prompt 的时刻（对话自然带出机制） */
+    injectedAt?: number;
+    /** 已注入聊天 prompt 的次数（上限内可见，防止同一批见闻反复注入） */
+    injectedCount?: number;
 };
 
 export type SurfTrace = {
@@ -246,6 +250,39 @@ export function appendSurfNote(notes: SurfNote[], note: SurfNote, limit: number)
 
 export function deleteSurfNote(noteId: string): void {
     saveSurfNotes(loadSurfNotes().filter(n => n.id !== noteId));
+}
+// ── 对话注入（见闻自然带出）─────────────────────────────────────────────
+/**
+ * 构建供聊天 prompt 注入的见闻上下文（「看完一堆之后，聊天时自然带出来」）。
+ * 规则：worthSharing、未被横幅时代分享过（sharedAt）、注入次数 < 2、
+ * 创建 72h 内的最新见闻，每轮最多 3 条。
+ * 注入后标记 injectedAt/injectedCount（视为已交付对话视野，防止同一批反复注入）。
+ */
+export function buildSurfContextForPrompt(now: number = Date.now()): string {
+    let settings: SurfSettings;
+    try { settings = loadSurfSettings(); } catch { return ""; }
+    if (!settings.autoShare) return "";
+    const HOUR = 3_600_000;
+    const notes = loadSurfNotes()
+        .filter(n => n.worthSharing)
+        .filter(n => !n.sharedAt)
+        .filter(n => (n.injectedCount ?? 0) < 2)
+        .filter(n => now - n.createdAt <= 72 * HOUR)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 3);
+    if (!notes.length) return "";
+    const lines = notes.map(n => {
+        const summary = (n.summary || "").trim().replace(/\s+/g, " ").slice(0, 140);
+        return `- 「${n.title}」：${summary}`;
+    });
+    const context = `以下是你最近自主探索时沉淀的见闻，用户尚未知晓。当前你们正在对话，如果语境契合，可以自然地（用你自己的语气）把其中一两条带出来分享；如果语境不契合，不必强行提及，继续耐心等待。\n${lines.join("\n")}`;
+    try {
+        const next = loadSurfNotes().map(n => notes.some(t => t.id === n.id)
+            ? { ...n, injectedAt: now, injectedCount: (n.injectedCount ?? 0) + 1 }
+            : n);
+        saveSurfNotes(next);
+    } catch { /* 标记失败不阻塞对话 */ }
+    return context;
 }
 
 // ── 搜索痕迹（反刍闸原料）────────────────────────────────────────────────
