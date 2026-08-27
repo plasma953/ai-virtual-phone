@@ -236,6 +236,24 @@ type VisionImageResolveResult =
     | { drop: true }
     | { keep: true };
 
+/**
+ * vision 图片载荷上限：压缩后的 data URI 超过该字符数（约 300KB 原始字节）
+ * 则不再作为视觉载荷携带——防止 AI 生成的超大原图（MB 级 base64）
+ * 击穿请求体导致 Failed to fetch。消息本体与历史存储不受影响，
+ * 组装时回退为文本指令（如 [照片:...]），AI 仍能通过描述理解图片。
+ */
+const VISION_IMAGE_MAX_DATAURL_CHARS = 400_000;
+
+/**
+ * 严格压缩 vision 图片：压缩失败或压缩后仍超上限时返回 null（触发 drop），
+ * 绝不回退原始大图（旧逻辑的 blobToDataUrl 兜底会把 MB 级 base64 原样带入请求）。
+ */
+async function compressVisionImageBlobStrict(blob: Blob): Promise<string | null> {
+    const compressed = await rasterizeImageBlobToJpegDataUrl(blob);
+    if (compressed && compressed.length <= VISION_IMAGE_MAX_DATAURL_CHARS) return compressed;
+    return null;
+}
+
 async function resolveVisionImageRefForApi(imageRef: string): Promise<VisionImageResolveResult> {
     if (isMediaStoreRef(imageRef)) {
         const result = await loadMediaBlob(imageRef);
@@ -244,17 +262,19 @@ async function resolveVisionImageRefForApi(imageRef: string): Promise<VisionImag
             const staticDataUrl = await rasterizeImageBlobToJpegDataUrl(result.blob);
             return staticDataUrl ? { url: staticDataUrl } : { drop: true };
         }
-        return { url: await readCompressedImageDataUrl(result.blob) };
+        const compressed = await compressVisionImageBlobStrict(result.blob);
+        return compressed ? { url: compressed } : { drop: true };
     }
 
     if (imageRef.startsWith("data:image/")) {
         const blob = dataUrlToBlob(imageRef);
-        if (!blob) return { keep: true };
+        if (!blob) return { drop: true };
         if (isGifMimeType(getImageRefMimeType(imageRef)) || isGifMimeType(blob.type)) {
             const staticDataUrl = await rasterizeImageBlobToJpegDataUrl(blob);
             return staticDataUrl ? { url: staticDataUrl } : { drop: true };
         }
-        return { url: await readCompressedImageDataUrl(blob) };
+        const compressed = await compressVisionImageBlobStrict(blob);
+        return compressed ? { url: compressed } : { drop: true };
     }
 
     try {

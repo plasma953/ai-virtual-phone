@@ -178,9 +178,19 @@ function formatImageGenerationDirective(msg: ChatMessage, prefix = ""): string {
     return formatPhotoDirective(msg, prefix);
 }
 
+/**
+ * vision 图片载荷的同步兜底闸门：AI 生成的图片以原始 base64 data URI 存入
+ * mediaUrl 时可能高达数 MB（3MB ≈ 300 万字符）。若上游预处理未压缩（或压缩
+ * 失败），此闸门直接拒绝超长 data URI，让该消息回退为文本指令（如 [照片:...]），
+ * 避免击穿请求体导致 Failed to fetch。消息本体与历史存储不受任何裁剪。
+ */
+const MAX_VISION_IMAGE_DATA_URL_CHARS = 400_000;
+
 function getPromptVisionImageUrl(msg: ChatMessage): string | undefined {
     if (((msg.mediaType === "image") || (msg.mediaType === "media_file" && msg.mediaData?.fileType === "image")) && msg.mediaUrl) {
-        return msg.mediaUrl;
+        const url = msg.mediaUrl;
+        if (url.startsWith("data:") && url.length > MAX_VISION_IMAGE_DATA_URL_CHARS) return undefined;
+        return url;
     }
     if (msg.role === "user" && msg.mediaType === "sticker") {
         const stickerUrl = msg.mediaData?.stickerUrl?.trim();
