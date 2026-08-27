@@ -6,6 +6,7 @@ import type { StateValue } from "./chat-storage";
 import { PresetConfig, Prompt, PromptOrderEntry, WorldBookConfig, RegexConfig, WorldBookEntry } from "./settings-types";
 import type { UserIdentity } from "@/components/settings/user-identity";
 import { MacroEngine, postProcessTrim } from "./macro-engine";
+import { clampHistoryBodyChars, guardFinalPayloadTotal } from "./prompt-guard";
 import type { RecentBlock, UnifiedRecentItem } from "./short-term-assembler";
 import { readDwellingLayoutCache } from "./dwelling-storage";
 import { formatDwellingContext } from "./dwelling-engine";
@@ -532,7 +533,7 @@ function pushChronologicalShortTermBlocks(params: {
         prevRole = promptRole;
         prevWasHistory = true;
 
-        let body = stripStateAndInnerForPrompt(msg.content);
+        let body = clampHistoryBodyChars(stripStateAndInnerForPrompt(msg.content));
         let imageUrl: string | undefined;
 
         if (msg.mediaType) {
@@ -992,7 +993,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             const showTs = ts && !(ts === prevTs && promptRole === prevRole);
             prevTs = ts;
             prevRole = promptRole;
-            let body = stripStateAndInnerForPrompt(msg.content);
+            let body = clampHistoryBodyChars(stripStateAndInnerForPrompt(msg.content));
             let imageUrl: string | undefined;
 
             // Format rich-media messages as bracket markers so the AI sees them in context
@@ -1082,7 +1083,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
                 _debugMeta: { marker: b.marker, depth: b.depth, order: b.order, _fromHistory: b.fromHistory },
             });
         } else if (canMerge && typeof finalPayload[finalPayload.length - 1].content === "string") {
-            (finalPayload[finalPayload.length - 1].content as string) += "\n\n" + processedText;
+            { const __pgPrev = finalPayload[finalPayload.length - 1]; __pgPrev.content = clampHistoryBodyChars((__pgPrev.content as string) + "\n\n" + processedText); }
             finalPayload[finalPayload.length - 1]._debugMeta = {
                 ...finalPayload[finalPayload.length - 1]._debugMeta,
                 marker: mergeMarkerText(finalPayload[finalPayload.length - 1]._debugMeta?.marker, b.marker),
@@ -1114,7 +1115,8 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             && typeof cur.content === "string"
             && typeof prev.content === "string";
         if (canMerge) {
-            prev.content = prev.content + "\n\n" + cur.content;
+            // [prompt-guard] post-merge consecutive-same-role final clamp
+            prev.content = clampHistoryBodyChars(prev.content + "\n\n" + cur.content);
             prev._debugMeta = {
                 ...prev._debugMeta,
                 marker: mergeMarkerText(prev._debugMeta?.marker, cur._debugMeta?.marker),
@@ -1123,6 +1125,13 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         }
     }
 
+    // [prompt-guard] global last-resort total cap before request pipeline
+    try {
+        const __cut = guardFinalPayloadTotal(finalPayload);
+        if (__cut > 0) console.warn(`[prompt-guard] payload over budget, trimmed ${__cut} chars from oldest`);
+    } catch (e) {
+        console.warn("[prompt-guard] total guard error:", e);
+    }
     return finalPayload;
 }
 
@@ -2227,7 +2236,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
                 _debugMeta: { marker: b.marker, depth: b.depth, order: b.order, _fromHistory: b.fromHistory },
             });
         } else if (canMerge && typeof finalPayload[finalPayload.length - 1].content === "string") {
-            (finalPayload[finalPayload.length - 1].content as string) += "\n\n" + processedText;
+            { const __pgPrev = finalPayload[finalPayload.length - 1]; __pgPrev.content = clampHistoryBodyChars((__pgPrev.content as string) + "\n\n" + processedText); }
             finalPayload[finalPayload.length - 1]._debugMeta = {
                 ...finalPayload[finalPayload.length - 1]._debugMeta,
                 marker: mergeMarkerText(finalPayload[finalPayload.length - 1]._debugMeta?.marker, b.marker),
@@ -2257,7 +2266,8 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
             && typeof cur.content === "string"
             && typeof prev.content === "string";
         if (canMerge) {
-            prev.content = prev.content + "\n\n" + cur.content;
+            // [prompt-guard] post-merge consecutive-same-role final clamp
+            prev.content = clampHistoryBodyChars(prev.content + "\n\n" + cur.content);
             prev._debugMeta = {
                 ...prev._debugMeta,
                 marker: mergeMarkerText(prev._debugMeta?.marker, cur._debugMeta?.marker),
@@ -2266,6 +2276,13 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         }
     }
 
+    // [prompt-guard] global last-resort total cap before request pipeline
+    try {
+        const __cut = guardFinalPayloadTotal(finalPayload);
+        if (__cut > 0) console.warn(`[prompt-guard] payload over budget, trimmed ${__cut} chars from oldest`);
+    } catch (e) {
+        console.warn("[prompt-guard] total guard error:", e);
+    }
     return finalPayload;
 }
 

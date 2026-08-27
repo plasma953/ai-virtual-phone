@@ -870,12 +870,17 @@ function buildCoReadingBoundaryEntries(
     return entries;
 }
 
-/** Keep newest entries that fit within a token budget. */
+/** Keep newest entries that fit within a token budget.
+ * @deprecated Only kept as a semantic fallback for unified-pool truncation.
+ * Handled by prompt-guard: budget<=0 no longer returns everything,
+ * falls back to keeping only the latest 40 entries.
+ */
 function truncateTimelineByTokenBudget(
     entries: NativeTimelineEntry[],
     budget: number,
 ): NativeTimelineEntry[] {
-    if (budget <= 0) return entries;
+    // [prompt-guard] zero/invalid budget no longer passes full data through
+    if (!Number.isFinite(budget) || budget <= 0) return entries.slice(-40);
     let total = 0;
     for (let i = entries.length - 1; i >= 0; i--) {
         total += estimateTokens(entries[i].content) + 4;
@@ -950,7 +955,8 @@ export function prepareShortTermContext(
 
     // Activation context: full timeline for keyword matching (not truncated)
     const wbActivationContext = timeline.slice(-10).map(e => e.content).join("\n");
-    const budget = memConfig.shortTermTokenBudget;
+    // [prompt-guard] sanitize budget: KV may hold 0/NaN/negative which bypasses truncation (incident root #1)
+    const budget = Math.min(Math.max(Math.round(Number(memConfig.shortTermTokenBudget) || 100000), 1000), 150000);
     const currentTag = getFeatureTag(appId);
     const history = options?.history ?? [];
     const characterName = loadCharacters().find(c => c.id === characterId)?.name ?? "角色";
@@ -1105,7 +1111,7 @@ export function prepareShortTermContext(
     // Truncate from oldest until within budget
     let total = pool.reduce((sum, p) => sum + p.tokens, 0);
     let startIdx = 0;
-    if (budget > 0) {
+    if (true) { // [prompt-guard] always run oldest-first eviction so even single giant entries get evicted (root #2 fallback)
         while (total > budget && startIdx < pool.length) {
             total -= pool[startIdx].tokens;
             startIdx++;
@@ -1222,7 +1228,8 @@ export function prepareGroupShortTermContext(
     ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const wbActivationContext = activationPool.slice(-10).map(item => item.content).join("\n");
 
-    const budget = memConfig.shortTermTokenBudget;
+    // [prompt-guard] sanitize budget: KV may hold 0/NaN/negative which bypasses truncation (incident root #1)
+    const budget = Math.min(Math.max(Math.round(Number(memConfig.shortTermTokenBudget) || 100000), 1000), 150000);
 
     const raw: { tag: string; order: number; entries: NativeTimelineEntry[] }[] = [];
 
@@ -1347,7 +1354,7 @@ export function prepareGroupShortTermContext(
 
     let total = pool.reduce((sum, item) => sum + item.tokens, 0);
     let startIdx = 0;
-    if (budget > 0) {
+    if (true) { // [prompt-guard] always run oldest-first eviction so even single giant entries get evicted (root #2 fallback)
         while (total > budget && startIdx < pool.length) {
             total -= pool[startIdx].tokens;
             startIdx++;
