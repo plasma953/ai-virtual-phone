@@ -54,6 +54,7 @@ function normalizeTurn(value: unknown): ChatOfflineTurn | null {
         summary: typeof item.summary === "string" ? item.summary : "",
         summaryTag: typeof item.summaryTag === "string" && item.summaryTag.trim() ? item.summaryTag.trim() : "summary",
         rawText: typeof item.rawText === "string" ? item.rawText : undefined,
+        reasoningText: typeof item.reasoningText === "string" ? item.reasoningText : undefined,
         createdAt: item.createdAt,
     };
 }
@@ -219,4 +220,33 @@ export function parseOfflineResponse(rawText: string, summaryTag: string): Parse
         summary: summary.trim(),
         summaryTag: effectiveSummaryTag,
     };
+}
+
+// ── 聊天列表用：最后一条线下记录 ─────────────────────────────
+// 聊天列表在每次渲染时都会逐会话读取，这里按原始 JSON 串缓存解析结果，
+// 避免把整段线下记录反复 parse。
+const lastTurnCache = new Map<string, { raw: string; turn: ChatOfflineTurn | null }>();
+
+export function getLastChatOfflineTurn(sessionId: string): ChatOfflineTurn | null {
+    let raw = "";
+    try {
+        raw = kvGet(storageKey(sessionId)) || "";
+    } catch {
+        return null;
+    }
+    const cached = lastTurnCache.get(sessionId);
+    if (cached && cached.raw === raw) return cached.turn;
+    const turns = raw ? loadChatOfflineTurns(sessionId) : [];
+    const turn = turns.length ? turns[turns.length - 1] : null;
+    lastTurnCache.set(sessionId, { raw, turn });
+    return turn;
+}
+
+// 线下记录没有普通消息那样的 preview 字段，这里从摘要/正文里压一条出来，
+// 并带上「线下」标记，方便在列表里跟线上消息区分。
+export function getChatOfflineTurnPreview(turn: ChatOfflineTurn | null): string {
+    if (!turn) return "";
+    const source = turn.summary.trim() || turn.assistantContent.trim() || turn.userContent.trim();
+    const text = compactProjectionText(source, 60);
+    return text ? `[线下] ${text}` : "";
 }

@@ -456,6 +456,8 @@ function shouldShowTimestamp(currentMsg: string, prevMsg: string | null): boolea
 type ChatRoomProps = {
     session: ChatSession;
     onBack: () => void;
+    /** 会话在设置页被删除后回调：由外层卸载本聊天室并回到列表 */
+    onDeleted?: () => void;
 };
 
 type OfflineActionTarget = {
@@ -1054,7 +1056,7 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     );
 }));
 
-export function ChatRoom({ session, onBack }: ChatRoomProps) {
+export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
     const [liveCSS, setLiveCSS] = useState(session.customCSS || "");
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [transientMessages, setTransientMessages] = useState<ChatMessage[]>([]);
@@ -5973,6 +5975,10 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                             showChatToast("已清空线下聊天记录");
                         }}
                         onDeleteFriend={() => onBack()}
+                        onSessionDeleted={() => {
+                            setShowSettings(false);
+                            (onDeleted ?? onBack)();
+                        }}
                     />
                 </div>,
                 wrapperRef.current.parentElement

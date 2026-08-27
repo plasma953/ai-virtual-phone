@@ -489,7 +489,7 @@ export async function PATCH(request: Request) {
     if (action === "thumb") {
       if (type !== "material") return NextResponse.json({ ok: false, error: "unsupported_target" }, { status: 400 });
       const owner = await supabaseFetch<unknown[]>(
-        `${table}?id=eq.${encodeFilter(id)}&deleted_at=is.null&select=id,author_id&limit=1`,
+        `${table}?id=eq.${encodeFilter(id)}&deleted_at=is.null&select=id,author_id,cover,updated_at&limit=1`,
       );
       if (!owner.ok) return NextResponse.json({ ok: false, error: owner.error }, { status: owner.status });
       const row = owner.data[0] as Record<string, unknown> | undefined;
@@ -497,9 +497,19 @@ export async function PATCH(request: Request) {
         return NextResponse.json({ ok: false, error: "只能给自己发布的内容补封面。" }, { status: 403 });
       }
       const cover = await resolveCoverForWrite("material", id, record.cover);
+      const patch: Record<string, unknown> = { cover };
+      // 替换已有封面（拍图管线升版后的重拍）时把 updated_at 悄悄 +1 秒：
+      // 列表封面走 /api/mixology/cover?v=updated_at 且 CDN 按年 immutable 缓存，
+      // v 不变的话新图永远被旧缓存挡住；+1 秒不足以改变列表排序。
+      // 首次补空封面仍只写 cover，一如既往不把老条目顶到大厅最前面。
+      const previous = cleanText(row.cover, 2_000_000);
+      if (previous && previous !== cover) {
+        const stamp = Date.parse(cleanText(row.updated_at, 80));
+        if (Number.isFinite(stamp)) patch.updated_at = new Date(stamp + 1000).toISOString();
+      }
       const written = await supabaseFetch<unknown[]>(
         `${table}?id=eq.${encodeFilter(id)}`,
-        { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ cover }) },
+        { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) },
       );
       if (!written.ok) return NextResponse.json({ ok: false, error: written.error }, { status: written.status });
       return NextResponse.json({ ok: true, cover });

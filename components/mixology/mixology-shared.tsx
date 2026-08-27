@@ -129,9 +129,12 @@ export function MatCard({
     // 卡型只看种类，不看有没有配图——否则同一类里配了图的高、没配图的矮，
     // 双列瀑布会参差。视觉类（角色卡/小票/装饰/尾调）一律海报式（缺图时用
     // 同尺寸的占位面），纯文本类（基底/文风/杯型/苦精）一律单列横条。
+    // 小票/尾调的静态封面就是渲染缩样（收起状态原样拍的那张）：卡片高度随图走、
+    // 不裁不放大，和酒柜实时缩样长一个样。角色卡等配图封面仍走固定比例海报裁满。
+    const flowCover = Boolean(shownCover) && (kind === "ticket" || kind === "encore");
     if (mixKindHasCover(kind)) {
         return (
-            <div className="mix-mat-card" data-kind={kind} data-poster="true" data-live={!shownCover && preview ? "true" : undefined} onClick={onClick}>
+            <div className="mix-mat-card" data-kind={kind} data-poster="true" data-live={!shownCover && preview ? "true" : undefined} data-flow={flowCover ? "true" : undefined} onClick={onClick}>
                 {shownCover ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img className="mix-mat-cover" src={shownCover} alt={name} onError={() => setCoverBroken(true)} />

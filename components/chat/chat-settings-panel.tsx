@@ -33,6 +33,7 @@ import {
     type GroupAdminAction,
 } from "@/lib/group-admin";
 import { clearChatOfflineTurns } from "@/lib/chat-offline-storage";
+import { removeChatSessionCompletely } from "@/lib/chat-session-remove";
 import { triggerDeleteFriendReaction } from "@/lib/friend-request-engine";
 import { loadCharacters } from "@/lib/character-storage";
 import { isAgentComputerConfigured } from "@/lib/agent-computer";
@@ -186,6 +187,7 @@ type ChatSettingsPanelProps = {
     onClose: () => void;
     onJumpToMessage?: (messageId: string) => void;
     onDeleteFriend?: () => void;
+    onSessionDeleted?: () => void;
     onToolHistoryCleared?: () => void;
     onOfflineHistoryCleared?: () => void;
     offlineHistoryBusy?: boolean;
@@ -286,6 +288,7 @@ export function ChatSettingsPanel({
     onClose,
     onJumpToMessage,
     onDeleteFriend,
+    onSessionDeleted,
     onToolHistoryCleared,
     onOfflineHistoryCleared,
     offlineHistoryBusy = false,
@@ -405,6 +408,7 @@ export function ChatSettingsPanel({
     const [showConfirmClear, setShowConfirmClear] = useState(false);
     const [showConfirmClearOffline, setShowConfirmClearOffline] = useState(false);
     const [showConfirmClearTools, setShowConfirmClearTools] = useState(false);
+    const [showConfirmDeleteSession, setShowConfirmDeleteSession] = useState(false);
     const [showConfirmDelete, setShowConfirmDelete] = useState(false);
     const [editingAlias, setEditingAlias] = useState(false);
     const [editingBilingualPrompt, setEditingBilingualPrompt] = useState(false);
@@ -639,6 +643,13 @@ export function ChatSettingsPanel({
         clearChatSessionToolHistory(session.id);
         onToolHistoryCleared?.();
         setShowConfirmClearTools(false);
+    };
+
+    const handleDeleteSession = () => {
+        if (offlineHistoryBusy) return;
+        removeChatSessionCompletely(session.id);
+        setShowConfirmDeleteSession(false);
+        onSessionDeleted?.();
     };
 
     const updateVisionImagePromptLimit = (value: unknown) => {
@@ -1209,6 +1220,26 @@ export function ChatSettingsPanel({
                             </span>
                         </div>
                     </button>
+                    <button
+                        className="menu-item"
+                        disabled={offlineHistoryBusy}
+                        onClick={() => {
+                            if (!offlineHistoryBusy) setShowConfirmDeleteSession(true);
+                        }}
+                        style={offlineHistoryBusy ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+                    >
+                        <ChatInfoIcon icon={Trash2} color="var(--c-danger)" />
+                        <div className="menu-label-group">
+                            <span className="menu-label menu-label-danger">删除会话</span>
+                            <span className="menu-desc">
+                                {offlineHistoryBusy
+                                    ? "线下回复生成中，完成后再删除"
+                                    : session.isGroup
+                                        ? "解散并移除该群聊，线上线下记录一并删除"
+                                        : "移除该会话及线上线下记录，好友保留"}
+                            </span>
+                        </div>
+                    </button>
                 </div>
 
             </div>
@@ -1429,6 +1460,22 @@ export function ChatSettingsPanel({
                     cancelLabel="取消"
                     onConfirm={handleClearToolHistory}
                     onCancel={() => setShowConfirmClearTools(false)}
+                />
+            )}
+
+            {/* Modal: Confirm Delete Session */}
+            {showConfirmDeleteSession && (
+                <ConfirmDialog
+                    title="确定要删除该会话吗？"
+                    message={session.isGroup
+                        ? "群聊将从列表移除，线上与线下聊天记录一并删除，无法恢复。是否继续？"
+                        : "会话将从列表移除，线上与线下聊天记录一并删除，好友不受影响，重新发起聊天会从空白开始。是否继续？"}
+                    icon={AlertCircle}
+                    variant="danger"
+                    confirmLabel="删除"
+                    cancelLabel="取消"
+                    onConfirm={handleDeleteSession}
+                    onCancel={() => setShowConfirmDeleteSession(false)}
                 />
             )}
 

@@ -66,10 +66,8 @@ function shotBridge(token: string): string {
   }
   function shoot(){
     try{
-      /* 折叠件先摊开再拍：缩略图是给人在列表里认东西用的，
-         拍一条收起来的把手等于什么都没拍到。这是一次性的离屏文档，摊开不影响任何人 */
-      var fold=document.querySelectorAll("details:not([open])");
-      for(var f=0;f<fold.length;f++){try{fold[f].setAttribute("open","");}catch(e){}}
+      /* 折叠件保持收起状态原样拍：酒柜卡的实时缩样就是自然状态，两边长一个样。
+         自定义 JS 折叠（非 details）本来也展不开，干脆统一所见即渲染 */
       var w=Math.max(1,Math.ceil(document.documentElement.getBoundingClientRect().width||${RENDER_W}));
       var h=measure();
       /* 脚本标签不必带进图里，去掉省体积（SVG 里本来也不执行） */

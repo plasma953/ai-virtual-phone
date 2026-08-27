@@ -1101,6 +1101,23 @@ export function deleteChatSession(sessionId: string) {
     clearChatSessionMessages(sessionId); // Cleanup associated messages
 }
 
+// 把一个会话的全部消息挪到另一个会话名下（重复会话合并用）。
+// 两边的 order 序号各自从 0 起，直接混排会串位，挪完后按时间重排目标会话。
+export function reassignChatSessionMessages(fromSessionId: string, toSessionId: string): number {
+    if (fromSessionId === toSessionId) return 0;
+    const changed: ChatMessage[] = [];
+    _messagesCache = _messagesCache.map(message => {
+        if (message.sessionId !== fromSessionId) return message;
+        const updated = { ...message, sessionId: toSessionId };
+        changed.push(updated);
+        return updated;
+    });
+    if (changed.length === 0) return 0;
+    dbPutMessages(changed);
+    reindexSessionMessageOrdersByTime(toSessionId);
+    return changed.length;
+}
+
 // ── CRUD for Messages ─────────────────────────
 export function loadChatMessages(sessionId: string, limit?: number): ChatMessage[] {
     const all = getSortedSessionMessages(sessionId);
