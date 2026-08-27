@@ -6,7 +6,7 @@ import type { PresetConfig } from "./settings-types";
 import { getCheckPhonePromptTags } from "./checkphone-config";
 
 export const BUILTIN_PRESET_ID = "builtin_default_v1";
-export const BUILTIN_PRESET_VERSION = 262; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
+export const BUILTIN_PRESET_VERSION = 263; // 升版本会用出厂内容重写用户的内置预设副本（自定义会丢），非必要不升
 
 export function createBuiltinPreset(): PresetConfig {
     const now = Date.now();
@@ -41,6 +41,7 @@ export function createBuiltinPreset(): PresetConfig {
             { identifier: "calendarSchedule", enabled: true },
             { identifier: "memoryCore", enabled: true },
             { identifier: "memoryLongTerm", enabled: true },
+            { identifier: "surf-context", enabled: true },
 
             // ── Divider ──
             { identifier: "shortTermMemory", enabled: true },
@@ -237,6 +238,18 @@ export function createBuiltinPreset(): PresetConfig {
                 injection_depth: 0,
                 enabled: true,
                 marker: true,
+            },
+            {
+                // 自主见闻（冲浪上下文）：运行时由 chat-engine 动态填充 content（buildSurfContextForPrompt）
+                // 见闻是 AI 的即时背景信息，采用 ABSOLUTE 插入聊天模式固定 d1（depth: 1 = 倒数第一条消息之前）
+                identifier: "surf-context",
+                name: "◇ [见闻背景]",
+                role: "system",
+                content: "",
+                injection_position: 1,
+                injection_depth: 1,
+                enabled: true,
+                marker: false,
             },
             {
                 identifier: "shortTermMemory",

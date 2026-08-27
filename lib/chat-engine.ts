@@ -35,6 +35,7 @@ import {
 } from "./settings-storage";
 import { assemblePromptPayload, applyOutputRegex, type LLMMessage, type LLMContentPart } from "./llm-prompt-assembler";
 import { MacroEngine, postProcessTrim } from "./macro-engine";
+import { buildSurfContextForPrompt } from "./surf-storage";
 import { getStatusRegionConfig, resolveStatusRegionSection, resolveStatusRegionExampleLine, resolveStatusRegionComposition, resolveStatusRegionFullExample } from "./chat-status-region";
 import {
     buildProviderDebugMessages,
@@ -2049,6 +2050,24 @@ export async function buildChatPromptMessages(
     });
     const pluginPromptHint = pluginPrompt.hint?.trim() ? `\n\n### 扩展插件\n${pluginPrompt.hint.trim()}\n` : "";
     const customAppRichMediaDirectives = formatCustomAppChatDirectivesForPrompt() + buildScreenEffectPromptHint() + pluginPromptHint;
+    // ── 自主见闻注入（surf-context）──
+    // 由预设中的 `surf-context` 条目驱动（所设即所得）：默认配置为“插入聊天”+ Inject Depth 1（倒数第一条消息之前）。
+    // 无该条目或条目被禁用 → 不注入；有见闻 → 动态填充条目 content；无见闻 → content 为空，组装器自动跳过。
+    if (preset && preset.prompts?.some(p => p.identifier === "surf-context")) {
+        const surfEntry = preset.prompts.find(p => p.identifier === "surf-context")!;
+        const surfEnabled = preset.prompt_order
+            ? (preset.prompt_order.find(o => o.identifier === "surf-context")?.enabled ?? surfEntry.enabled)
+            : surfEntry.enabled;
+        if (surfEnabled) {
+            const surfText = buildSurfContextForPrompt(Date.now());
+            preset = {
+                ...preset,
+                prompts: preset.prompts.map(p =>
+                    p.identifier === "surf-context" ? { ...p, content: surfText } : p,
+                ),
+            };
+        }
+    }
     const toolsPrompt = toolsEnabled && !usesNativeActions ? formatToolsForPrompt(enabledTools) : "";
     const chatBilingualInstruction = !session.isGroup
         ? buildChatBilingualInstruction(session.bilingualTranslationEnabled !== false, "single", session.bilingualTranslationPrompt)
