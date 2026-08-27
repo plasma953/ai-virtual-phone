@@ -180,13 +180,14 @@ export async function listObjects(
   prefix = "",
   limit = 100,
   sort?: { column: "name" | "created_at" | "updated_at"; order: "asc" | "desc" },
+  offset = 0,
 ): Promise<StorageObject[]> {
   const creds = resolveCreds(config);
   if (!creds) throw new Error("未配置 Supabase 地址或 key。");
   const res = await withRetries(() => fetchWithTimeout(`${creds.url}/storage/v1/object/list/${CLOUD_BACKUP_BUCKET}`, {
     method: "POST",
     headers: { ...authHeaders(creds.key), "Content-Type": "application/json" },
-    body: JSON.stringify({ prefix, limit, offset: 0, sortBy: sort ?? { column: "name", order: "asc" } }),
+    body: JSON.stringify({ prefix, limit, offset, sortBy: sort ?? { column: "name", order: "asc" } }),
     cache: "no-store",
   }, CONTROL_TIMEOUT_MS, "列举"));
   if (!res.ok) throw new Error(await describeError(res));

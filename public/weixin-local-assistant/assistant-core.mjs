@@ -326,6 +326,7 @@ async function autoReplyPendingMessages(env, runtime, options = {}) {
           shortcutRequest.action,
           generation.messages,
           replyText,
+          shortcutRequest.args,
         );
       } catch (err) {
         console.warn(`[weixin-assistant] 快捷动作准备失败 bot=${runtime.bot.id}: ${errorMessage(err)}`);
@@ -526,6 +527,8 @@ async function loadWeixinShortcutActions(env) {
         // 建命令时都退成 push，最后必然弹一条要点按的通知。
         deliveryMode: String(action?.deliveryMode || "push") === "email" ? "email" : "push",
         expiresInSeconds: Math.max(30, Math.min(900, Number(action?.expiresInSeconds) || 120)),
+        // 参数 JSON Schema 原文（客户端同步时已验证过能解析）：能力菜单据此教角色写带参标记
+        parameterSchema: String(action?.parameterSchema || "").trim().slice(0, 8000),
       };
     }).filter(action => action.actionId && action.name && action.shortcutName).slice(0, 20);
   } catch {
@@ -545,16 +548,37 @@ function appendWeixinShortcutCapability(messages, actions) {
       "<tool_availability>当前对话正通过微信进行：原生工具调用不可用；但下方明确列出的 iPhone 快捷动作可以使用。不要输出其他工具调用格式。</tool_availability>",
     );
   }
-  const menu = actions.map(action => {
+  // 把动作的参数 schema 压成一句人话（与站内 describeActionParameters 同口径），
+  // 让角色知道括号里该写什么。schema 缺失或解析不了就当无参数。
+  const describeParameters = (action) => {
+    try {
+      const schema = JSON.parse(String(action.parameterSchema || "") || "{}");
+      const properties = schema && typeof schema.properties === "object" && schema.properties !== null
+        ? schema.properties
+        : null;
+      const names = properties ? Object.keys(properties).slice(0, 8) : [];
+      if (names.length === 0) return "";
+      const required = new Set(Array.isArray(schema.required) ? schema.required.map(item => String(item)) : []);
+      return `［参数：${names.map(name => required.has(name) ? `${name}（必填）` : name).join("、")}］`;
+    } catch {
+      return "";
+    }
+  };
+  const described = actions.map(action => ({ action, parameters: describeParameters(action) }));
+  const menu = described.map(({ action, parameters }) => {
     const description = action.description ? `（${action.description.slice(0, 40)}）` : "";
     // 邮件送达由 iOS 自动化直接跑，推送送达要对方点通知——这会影响角色的措辞
     const channel = action.deliveryMode === "email" ? "〔自动执行〕" : "〔需对方点确认〕";
-    return `「${action.name}」${description}${channel}`;
+    return `「${action.name}」${description}${channel}${parameters}`;
   }).join("、");
+  const hasParameters = described.some(item => item.parameters !== "");
   messages.push({
     role: "system",
     content: "（可选能力：你可以请求在对方的 iPhone 上执行这些快捷动作：" + menu
       + "。确有需要时，在回复中单独一行输出【快捷动作：动作名】，动作名必须与上面完全一致；"
+      + (hasParameters
+        ? "带参数的动作写成【快捷动作：动作名({\"参数名\":\"值\"})】，括号里是一个 JSON 对象；没有参数的动作不要写括号。"
+        : "")
       + "系统会先把你本轮的其他话发到微信，再触发动作："
       + "标着〔自动执行〕的对方手机会直接跑，标着〔需对方点确认〕的会先弹一条运行提示、TA点一下才执行。"
       + "会回传结果的动作，结果之后会自动交给你继续回复。"
@@ -564,15 +588,26 @@ function appendWeixinShortcutCapability(messages, actions) {
 
 export function extractWeixinShortcutRequest(text, actions = []) {
   const raw = String(text || "");
-  const match = raw.match(/【快捷动作[：:]\s*([^】\n]{1,60})】/);
-  if (!match) return { text: raw.trim(), requestedName: "", action: null };
+  // 与 push-generate 同一套标记：【快捷动作：名称】与带参数的【快捷动作：名称({...})】
+  // 都要认（参数允许换行）——老正则会把括号连参数当成动作名，目录匹配必然落空。
+  const match = raw.match(/【快捷动作[：:]\s*([^(（）)】\n]{1,60}?)\s*(?:[(（]([\s\S]{0,2000}?)[)）])?\s*】/);
+  if (!match) return { text: raw.trim(), requestedName: "", action: null, args: {} };
   const requestedName = match[1].trim();
+  // 括号里的 JSON 参数写坏了就当没带——宁可少传，也不要整条动作失败
+  let args = {};
+  const rawArgs = (match[2] || "").trim();
+  if (rawArgs) {
+    try {
+      const parsed = JSON.parse(rawArgs);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) args = parsed;
+    } catch { /* ignore */ }
+  }
   const cleaned = raw
-    .replace(/【快捷动作[：:][^】\n]{1,60}】/g, "")
+    .replace(/【快捷动作[：:]\s*[^(（）)】\n]{1,60}?\s*(?:[(（][\s\S]{0,2000}?[)）])?\s*】/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim() || "……";
   const action = actions.find(item => String(item?.name || "") === requestedName) || null;
-  return { text: cleaned, requestedName, action };
+  return { text: cleaned, requestedName, action, args };
 }
 
 function compactContinuationMessages(messages) {
@@ -633,12 +668,12 @@ async function callPersonalPushGateway(env, action, body) {
   return data;
 }
 
-async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstReply) {
+async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstReply, args = {}) {
   const created = await callPersonalPushGateway(env, "shortcut-create", {
     actionId: action.actionId,
     actionName: action.name,
     shortcutName: action.shortcutName,
-    arguments: {},
+    arguments: args,
     resultMode: action.resultMode,
     deliveryMode: action.deliveryMode,
     expiresInSeconds: action.expiresInSeconds,

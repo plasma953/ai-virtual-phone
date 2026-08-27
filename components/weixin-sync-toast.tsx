@@ -1,39 +1,79 @@
 "use client";
 
-// 微信云同步 toast：weixin-cloud-sync 广播的同步事件在这里可视化——
-// 拉到新消息、上传本地消息、运行包同步、以及一切失败。挂在桌面壳根部，
-// 不管用户停在哪个 App 都看得见，后台同步不再静默。
+// 微信云同步 toast：weixin-cloud-sync 广播的同步事件在这里可视化，过程常驻式——
+// 「…中」的 sticky 条从动手挂到结束，结束时同 id 原地替换成结果（自动消隐），
+// 没事可干则无声撤下（text 为 null）。挂在桌面壳根部，停在哪个 App 都看得见。
 
 import { useEffect, useRef, useState } from "react";
 import { WEIXIN_SYNC_TOAST_EVENT } from "@/lib/weixin-cloud-sync";
 
+type ToastEntry = { id: string; text: string; sticky: boolean };
+
 export function WeixinSyncToast() {
-    const [text, setText] = useState<string | null>(null);
-    const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const [entries, setEntries] = useState<ToastEntry[]>([]);
+    const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
     useEffect(() => {
+        const timersMap = timers.current;
+        const clearTimer = (id: string) => {
+            const timer = timersMap.get(id);
+            if (timer) clearTimeout(timer);
+            timersMap.delete(id);
+        };
+        const remove = (id: string) => {
+            clearTimer(id);
+            setEntries(prev => prev.filter(entry => entry.id !== id));
+        };
         const onToast = (event: Event) => {
-            const detail = (event as CustomEvent).detail as { text?: string; duration?: number } | undefined;
-            if (!detail?.text) return;
-            setText(detail.text);
-            clearTimeout(timer.current);
-            timer.current = setTimeout(() => setText(null), Math.max(1200, Number(detail.duration) || 2200));
+            const detail = (event as CustomEvent).detail as
+                { id?: string; text?: string | null; sticky?: boolean; duration?: number } | undefined;
+            if (!detail?.id) return;
+            const id = detail.id;
+            if (detail.text === null || detail.text === undefined || !detail.text) {
+                remove(id);
+                return;
+            }
+            const entry: ToastEntry = { id, text: detail.text, sticky: detail.sticky === true };
+            setEntries(prev => {
+                const rest = prev.filter(item => item.id !== id);
+                return [...rest, entry];
+            });
+            clearTimer(id);
+            // sticky 常驻到被同 id 的后续事件替换/撤下；结果条到点自动消隐
+            if (!entry.sticky) {
+                timersMap.set(id, setTimeout(() => remove(id), Math.max(1200, Number(detail.duration) || 2200)));
+            }
         };
         window.addEventListener(WEIXIN_SYNC_TOAST_EVENT, onToast);
         return () => {
             window.removeEventListener(WEIXIN_SYNC_TOAST_EVENT, onToast);
-            clearTimeout(timer.current);
+            for (const timer of timersMap.values()) clearTimeout(timer);
+            timersMap.clear();
         };
     }, []);
 
-    if (!text) return null;
-    // wp-toast 本身是 sticky（为 App 内布局设计），这里作全局浮层改成 fixed 居中
+    if (entries.length === 0) return null;
     return (
         <div
-            className="wp-toast"
-            style={{ position: "fixed", left: "50%", bottom: 28, transform: "translateX(-50%)", zIndex: 3000 }}
+            style={{
+                position: "fixed",
+                left: "50%",
+                bottom: 28,
+                transform: "translateX(-50%)",
+                zIndex: 3000,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 6,
+                pointerEvents: "none",
+            }}
         >
-            {text}
+            {entries.map(entry => (
+                // wp-toast 本身是 sticky（为 App 内布局设计），此处在固定容器里改回常规流
+                <div className="wp-toast" style={{ position: "static" }} key={entry.id}>
+                    {entry.text}
+                </div>
+            ))}
         </div>
     );
 }
