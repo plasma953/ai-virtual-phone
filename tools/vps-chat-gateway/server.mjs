@@ -44,7 +44,7 @@ const GATEWAY_TOKEN = (process.env.PHONE_GATEWAY_TOKEN || "").trim();
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT || 2);
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 300_000);
 const JOB_TTL_MS = Number(process.env.JOB_TTL_MS || 12 * 60 * 60 * 1000);
-const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024; // 4MB：90万字符预算按UTF-8最坏密度约2.7MB，留余量
+const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024; // 4MB：前端总量硬帽绝对上限 100 万字符，UTF-8 最坏密度（4字节/字符）恰为 4MB，与网关上限严丝合缝
 const MAX_OPEN_JOBS = 40; // 未完成任务的全局上限，防滥用
 const JOBS_DIR = path.join(__dirname, "jobs");
 
