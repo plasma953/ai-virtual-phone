@@ -5,6 +5,7 @@
 //    绕过 opencode.ai 未开放浏览器 CORS 的问题。
 
 import type { LlmRequestPayload } from "./llm-provider-adapter";
+import { TOTAL_BYTES_ABS_CAP } from "./prompt-guard";
 
 export type FetchLlmPayloadOptions = {
     signal?: AbortSignal;
@@ -15,6 +16,23 @@ export function fetchLlmPayload(
     options: FetchLlmPayloadOptions = {},
 ): Promise<Response> {
     const bodyText = JSON.stringify(payload.body);
+    // 物理保险丝（#sym:500 最后防线）：正常路径在 buildProviderRequest /
+    // simpleLLMCall 内已被双轨总闸裁剪，此处不应触发。一旦触发说明存在
+    // 未知新路径绕过了钳制——宁可熔断单次请求，也不允许超限 body 打爆
+    // VPS 网关（4MB 容差）造成全局链路 500。
+    const bodyBytes = new TextEncoder().encode(bodyText).length;
+    if (bodyBytes > TOTAL_BYTES_ABS_CAP) {
+        console.error(
+            "[fetchLlmPayload] fuse blown: body " + bodyBytes +
+            " bytes > cap " + TOTAL_BYTES_ABS_CAP + ", refused. URL=" + payload.url.slice(0, 120),
+        );
+        return Promise.resolve(new Response(JSON.stringify({
+            error: "payload_too_large",
+            message: "request body exceeds gateway physical cap, fused locally",
+            bodyBytes,
+            capBytes: TOTAL_BYTES_ABS_CAP,
+        }), { status: 413, headers: { "Content-Type": "application/json" } }));
+    }
     if (payload.serverProxy) {
         return fetch("/api/llm-proxy", {
             method: "POST",

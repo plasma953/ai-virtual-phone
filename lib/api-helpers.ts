@@ -3,6 +3,7 @@
 // request headers, and response parsing. All LLM-calling modules should use these.
 
 import type { ApiConfig } from "./settings-types";
+import { guardFinalPayloadTotal } from "./prompt-guard";
 
 const SIMPLE_ANTHROPIC_AUTO_MAX_TOKENS = 8192;
 
@@ -99,6 +100,14 @@ export async function simpleLLMCall(
     messages: { role: string; content: string }[],
     options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal },
 ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
+    // 防线下沉（#sym:500 第二阶段）：simpleLLMCall 是记忆总结、NPC 生成等
+    // 全部后台任务的公共通道，此前完全裸奔于 prompt-guard 之外。
+    // 现在在构造 body 前统一走双轨总闸（字符+字节），就地裁剪超限消息，
+    // 保证任何后台路径发出的 POST body 物理体积都被锁死在网关容差内。
+    const guardCut = guardFinalPayloadTotal(messages);
+    if (guardCut > 0) {
+        console.warn("[simpleLLMCall] 总闸裁剪了 " + guardCut + " 字符（字符+字节双轨记账）");
+    }
     const baseUrl = determineBaseUrl(config);
     if (!baseUrl || !config.apiKey) {
         return { content: null, error: "API 地址或密钥无效" };

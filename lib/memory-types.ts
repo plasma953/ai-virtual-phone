@@ -170,7 +170,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     dreamMinFragments: 5,
     calendarSummaryEnabled: false,
     calendarSummaryTokenBudget: 1500,
-    promptGuardTotalChars: 900000,
+    promptGuardTotalChars: 300000, // 2026-08-27 收紧：与 prompt-guard DEFAULT_TOTAL_CHARS 对齐，物理体积 + token 红线双重兜底
     promptGuardSoftChars: 12000,
     shortTermAllowedSources: {
         chat: true,

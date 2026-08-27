@@ -180,7 +180,15 @@ export function loadMemoryConfig(): MemoryConfig {
     try {
         const raw = kvGet(CONFIG_KEY);
         if (!raw) return { ...DEFAULT_MEMORY_CONFIG };
-        return { ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) };
+        const stored = { ...DEFAULT_MEMORY_CONFIG, ...JSON.parse(raw) };
+        // 旧默认纠偏（#sym:500 第二阶段）：900000 是历史默认总量预算，
+        // 存量用户从未主动调整过的配置会以旧值覆盖新默认 300000，
+        // 使收紧后的总闸形同虚设。此处把"恰好等于旧默认"视为未自定义，
+        // 统一纠偏到新默认；用户主动设置的其他数值不受影响。
+        if (stored.promptGuardTotalChars === 900000) {
+            stored.promptGuardTotalChars = DEFAULT_MEMORY_CONFIG.promptGuardTotalChars;
+        }
+        return stored;
     } catch {
         return { ...DEFAULT_MEMORY_CONFIG };
     }

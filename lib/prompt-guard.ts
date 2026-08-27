@@ -30,11 +30,18 @@ export const PROMPT_GUARD_SOFT_ABS_MIN = 2000;
 export const PROMPT_GUARD_SOFT_ABS_MAX = 500000;
 
 /** 用户未配置时的默认值 */
-const DEFAULT_TOTAL_CHARS = 900000;
+const DEFAULT_TOTAL_CHARS = 300000;
 const DEFAULT_SOFT_CHARS = 12000;
 
 /** 巨型消息截断后保留的尾部长度 */
 const TAIL_KEEP_CHARS = 400;
+/**
+ * 发送前字节硬帽（2MB）。
+ * 事故复盘中的 #sym:500 与网关容差直接相关：中文 UTF-8 每字符 3 字节，
+ * 字符预算再大也可能被字节膨胀击穿网关。网关容差约 4MB，这里留出
+ * JSON 转义与请求框架开销的 100% 余量，作为字符预算之外的绝对兜底。
+ */
+export const TOTAL_BYTES_ABS_CAP = 2 * 1024 * 1024;
 
 /** 总闸裁剪时写回的占位标记（计入发送体积的记账） */
 const GUARD_EVICTED_MARK = "[早期上下文已因体积过大被系统裁剪]";
@@ -131,60 +138,118 @@ export function guardFinalPayloadTotal<T extends { role: string; content: unknow
     payload: T[],
 ): number {
     if (!Array.isArray(payload)) return 0;
-    const CHAR_BUDGET = readUserThresholds().totalChars;
+    const t = readUserThresholds();
+    const CHAR_BUDGET = t.totalChars;
+    // 字节硬帽：网关容差约 4MB，取 2MB 留足 JSON 转义与框架开销。
+    // 中文 UTF-8 每字符 3 字节，字符预算无法单独拦住字节膨胀，
+    // 字节轨是中文/富媒体场景防止 #sym:500 复发的绝对兜底。
+    const BYTE_BUDGET = TOTAL_BYTES_ABS_CAP;
+    const byteLen = (x: string): number => {
+        try {
+            return new TextEncoder().encode(x).length;
+        } catch {
+            // 极端环境无 TextEncoder 时按非 ASCII 2 字节粗估
+            return x.length * 2;
+        }
+    };
+    const byteLenOf = (c: unknown): number => {
+        if (typeof c === "string") return byteLen(c);
+        try {
+            return byteLen(JSON.stringify(c ?? ""));
+        } catch {
+            return 0;
+        }
+    };
     const indices: number[] = [];
-    let total = 0;
+    let totalChars = 0;
+    let totalBytes = 0;
     for (let i = 0; i < payload.length; i++) {
         const m = payload[i];
-        if (m && typeof m.content === "string") {
+        if (!m) continue;
+        if (typeof m.content === "string") {
             indices.push(i);
-            total += m.content.length;
+            totalChars += m.content.length;
+            totalBytes += byteLen(m.content);
+        } else if (Array.isArray(m.content)) {
+            // 多模态数组消息此前完全游离于总闸之外（只统计字符串），
+            // 视觉历史可无限累积绕过裁剪；现在同样纳入记账与裁剪。
+            indices.push(i);
+            const json = JSON.stringify(m.content);
+            totalChars += json.length;
+            totalBytes += byteLen(json);
         }
-        // image_url 多部件内容与 tool 载荷不计入（由视觉管线单独控制）
     }
-    if (total <= CHAR_BUDGET) return 0;
+    if (totalChars <= CHAR_BUDGET && totalBytes <= BYTE_BUDGET) return 0;
     warnOnce(
         "total_overflow",
-        "payload 文本总量 " + total + " 字符超出硬帽 " + CHAR_BUDGET + "，将从最旧的消息开始裁剪",
+        "payload 总量（字符 " + totalChars + "/" + CHAR_BUDGET + "，字节 " + totalBytes + "/" + BYTE_BUDGET + "）超出硬帽，将从最旧的消息开始裁剪",
     );
     let cut = 0;
+    let cutBytes = 0;
     // 已写入占位标记的膨胀量。标记本身是要发出去的真实字节，
     // 不纳入记账就会让最终总量越过硬帽（冒烟测试 T2/T3 抓到的 bug）。
     let marked = 0;
+    let markedBytes = 0;
     // 保护最后一条消息（通常是本次输入）不被裁剪
     const protectIdx = payload.length - 1;
+    const markBytes = byteLen(GUARD_EVICTED_MARK);
     // 允许在仅剩少数索引时继续裁剪；遇到受保护的最新消息才提前终止。
     // 覆盖"payload 中只有一条 3MB 巨物"的极端场景：照样动刀，保住链路。
-    // 真实当前总量 = total - cut + marked。
-    while (total - cut + marked > CHAR_BUDGET && indices.length > 0) {
+    // 真实当前总量 = total - cut + marked（字符/字节双轨）。
+    while (indices.length > 0) {
+        const charsOver = totalChars - cut + marked - CHAR_BUDGET;
+        const bytesOver = totalBytes - cutBytes + markedBytes - BYTE_BUDGET;
+        if (charsOver <= 0 && bytesOver <= 0) break;
         const idx = indices.shift()!;
         if (idx === protectIdx) break;
-        const m = payload[idx] as { content: string };
-        // 多切掉一个"即将写入的标记长度"，抵消替换造成的回填
-        const need = total - cut + marked - CHAR_BUDGET + GUARD_EVICTED_MARK.length;
-        const remove = Math.min(m.content.length, Math.max(0, need));
-        m.content = GUARD_EVICTED_MARK + m.content.slice(remove);
+        const m = payload[idx] as { content: string | unknown[] };
+        if (Array.isArray(m.content)) {
+            // 数组消息整体降级为占位文本，同时从双轨记账中扣除
+            const removedChars = JSON.stringify(m.content).length;
+            const removedBytes = byteLenOf(m.content);
+            m.content = GUARD_EVICTED_MARK;
+            cut += removedChars;
+            cutBytes += removedBytes;
+            marked += GUARD_EVICTED_MARK.length;
+            markedBytes += markBytes;
+            continue;
+        }
+        const s = m.content as string;
+        const sBytes = byteLen(s);
+        const bytesPerChar = s.length > 0 ? sBytes / s.length : 1;
+        const needChars = Math.max(0, charsOver) + GUARD_EVICTED_MARK.length;
+        const needBytes = Math.max(0, bytesOver) + markBytes;
+        // 字符/字节两轨取更紧者，保证两条红线同时满足
+        const remove = Math.min(s.length, Math.max(needChars, Math.ceil(needBytes / bytesPerChar)));
+        m.content = GUARD_EVICTED_MARK + s.slice(remove);
         cut += remove;
+        cutBytes += remove * bytesPerChar;
         marked += GUARD_EVICTED_MARK.length;
+        markedBytes += markBytes;
     }
     // 收尾：若保护对象（最新消息）本身超预算导致循环提前终止，
     // 对其做一次性裁剪，确保总量必然回落到硬帽之内（同样计入标记膨胀）。
-    const overflowAfterLoop = total - cut + marked - CHAR_BUDGET;
-    if (
-        overflowAfterLoop > 0 &&
-        payload.length > 0 &&
-        typeof (payload[payload.length - 1] as { content?: unknown })?.content === "string" &&
-        ((payload[payload.length - 1] as { content: string }).content.length >
-            GUARD_TRIMMED_NEWEST_MARK.length)
-    ) {
-        const last = payload[payload.length - 1] as { content: string };
-        const origLen = last.content.length;
-        const keep = Math.max(
-            0,
-            origLen - overflowAfterLoop - GUARD_TRIMMED_NEWEST_MARK.length,
-        );
-        last.content = GUARD_TRIMMED_NEWEST_MARK + last.content.slice(last.content.length - keep);
-        cut += origLen - keep;
+    const charsOverAfter = totalChars - cut + marked - CHAR_BUDGET;
+    const bytesOverAfter = totalBytes - cutBytes + markedBytes - BYTE_BUDGET;
+    if ((charsOverAfter > 0 || bytesOverAfter > 0) && payload.length > 0) {
+        const last = payload[payload.length - 1] as { content?: unknown };
+        if (typeof last?.content === "string") {
+            const s = last.content as string;
+            const sBytes = byteLen(s);
+            const bytesPerChar = s.length > 0 ? sBytes / s.length : 1;
+            const needChars = Math.max(0, charsOverAfter) + GUARD_TRIMMED_NEWEST_MARK.length;
+            const needBytes = Math.max(0, bytesOverAfter) + byteLen(GUARD_TRIMMED_NEWEST_MARK);
+            const remove = Math.min(s.length, Math.max(needChars, Math.ceil(needBytes / bytesPerChar)));
+            const keep = s.length - remove;
+            if (keep >= 0 && keep < s.length) {
+                last.content = GUARD_TRIMMED_NEWEST_MARK + s.slice(s.length - keep);
+                cut += remove;
+            }
+        } else if (Array.isArray(last?.content)) {
+            // 最新消息是超巨型数组（如内联 base64 图）时的最终兜底
+            last.content = GUARD_TRIMMED_NEWEST_MARK;
+            cut += 1;
+        }
     }
     return cut;
 }

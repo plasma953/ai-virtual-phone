@@ -1,5 +1,6 @@
 import type { LLMContentPart, LLMMessage } from "./llm-prompt-assembler";
 import type { ApiConfig, PresetConfig } from "./settings-types";
+import { guardFinalPayloadTotal } from "./prompt-guard";
 import {
     buildChatCompletionsUrl,
     buildRequestHeaders,
@@ -256,6 +257,11 @@ export function buildProviderRequest(
     // "[图片]" 文本，避免不支持视觉的模型（如 DeepSeek）收到 multipart 返回 400。
     const guardedMessages = config.enableImageRecognition === true ? messages : stripVisionParts(messages);
     const providerMessages = ensureProviderHasUserMessage(normalizeNativeToolMessageAdjacency(guardedMessages));
+    // 总闸下沉（#sym:500 第二阶段）：buildProviderRequest 是主聊天与 surf-engine 等
+    // 后台引擎的公共出口。surf-engine 等路径不经过 chat-engine 的预设组装，
+    // 此前以裸 messages 直发，完全游离于 prompt-guard 之外。此处统一执行
+    // 字符+字节双轨总闸，就地裁剪超限消息，彻底消灭防线外领地。
+    guardFinalPayloadTotal(providerMessages);
 
     if (providerKind === "anthropic") {
         return buildAnthropicRequest(config, preset, baseUrl, providerMessages, options);
