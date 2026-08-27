@@ -1610,10 +1610,22 @@ export async function deleteWeixinCloudMessagesFromCloud(messages: ChatMessage[]
     paths.add(weixinCloudMessagePath(target.bot.id, `local_${message.id}`));
   }
 
+  // 逐条容错：一条删失败不连坐后面的——先把能删的都删掉，最后统一抛错。
+  // 失败对用户可见（聊天室的删除流程会 toast 这条报错并保留本地消息），
+  // 重试时只剩漏网的那几条要删，不会推倒重来。
   let deleted = 0;
+  let failed = 0;
   for (const path of paths) {
-    await removeObject(cloudConfig, path);
-    deleted += 1;
+    try {
+      await removeObject(cloudConfig, path);
+      deleted += 1;
+    } catch (err) {
+      failed += 1;
+      console.warn("[WeixinCloudSync] remove cloud message failed:", path, err);
+    }
+  }
+  if (failed > 0) {
+    throw new Error(`有 ${failed} 条云端消息没删掉（已删 ${deleted} 条），请重试。`);
   }
   return deleted;
 }

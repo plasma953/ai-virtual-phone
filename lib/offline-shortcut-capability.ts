@@ -25,6 +25,10 @@ export type OfflineShortcutAction = {
   deliveryMode: "push" | "email";
   resultMode: "none" | "text" | "image";
   expiresInSeconds?: number;
+  /** 动作说明：微信通道的能力菜单里给角色看 */
+  description?: string;
+  /** 参数 JSON Schema 原文：云端（微信通道等）据此教角色写带参标记；没配参数则为空 */
+  parameterSchema?: string;
 };
 
 // 离线续跑占位符（整值精确匹配，与前台续跑同一套替换契约）：
@@ -115,6 +119,11 @@ export function listOfflineShortcutActions(): OfflineShortcutAction[] {
     deliveryMode: action.deliveryMode,
     resultMode: action.resultMode,
     expiresInSeconds: action.expiresInSeconds,
+    ...(action.description?.trim() ? { description: action.description.trim().slice(0, 200) } : {}),
+    // 参数 schema 只同步解析得通的：云端拿它教角色写带参标记，坏 JSON 教不了
+    ...(action.parameterSchema?.trim() && parseBridgeActionParameterSchema(action.parameterSchema)
+      ? { parameterSchema: action.parameterSchema.trim().slice(0, 8000) }
+      : {}),
   }));
 }
 

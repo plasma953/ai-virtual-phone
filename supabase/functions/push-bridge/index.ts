@@ -509,6 +509,7 @@ Deno.serve(async (req: Request) => {
     const sendShortcutCreate = async (
       action: Record<string, unknown>,
       deferDelivery = false,
+      args: Record<string, unknown> = {},
     ): Promise<{ ok: boolean; note: string; commandId: string }> => {
       const actionName = String(action.name ?? "");
       try {
@@ -523,7 +524,7 @@ Deno.serve(async (req: Request) => {
             actionId: String(action.actionId ?? ""),
             actionName,
             shortcutName: String(action.shortcutName ?? ""),
-            arguments: {},
+            arguments: args,
             resultMode: String(action.resultMode ?? "none"),
             expiresInSeconds: Number(action.expiresInSeconds) || undefined,
             deferDelivery,
@@ -737,14 +738,27 @@ Deno.serve(async (req: Request) => {
 
         // 角色离线自主调用：回复里输出【快捷动作：名称】即按目录匹配执行，
         // 标记从正文剥离（不进聊天记录）。每次生成最多执行一个。
+        // 与 push-generate 同一套标记：带参数的【快捷动作：名称({...})】也要认
+        //（参数允许换行）——老正则会把括号连参数当成动作名，目录匹配必然落空。
         let deferredAiShortcutCommandId = "";
         let deferredAiShortcutName = "";
         if (replyRaw) {
-          const markerMatch = replyRaw.match(/【快捷动作[：:]\s*([^】\n]{1,60})】/);
+          const markerMatch = replyRaw.match(/【快捷动作[：:]\s*([^(（）)】\n]{1,60}?)\s*(?:[(（]([\s\S]{0,2000}?)[)）])?\s*】/);
           if (markerMatch) {
-            replyRaw = replyRaw.replace(/【快捷动作[：:][^】\n]{1,60}】/g, "").replace(/\n{3,}/g, "\n\n").trim();
+            replyRaw = replyRaw
+              .replace(/【快捷动作[：:]\s*[^(（）)】\n]{1,60}?\s*(?:[(（][\s\S]{0,2000}?[)）])?\s*】/g, "")
+              .replace(/\n{3,}/g, "\n\n").trim();
             if (!replyRaw) replyRaw = "……";
             const wanted = markerMatch[1].trim();
+            // 括号里的 JSON 参数写坏了就当没带——宁可少传，也不要整条动作失败
+            let wantedArgs: Record<string, unknown> = {};
+            const rawArgs = (markerMatch[2] ?? "").trim();
+            if (rawArgs) {
+              try {
+                const parsed = JSON.parse(rawArgs) as unknown;
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) wantedArgs = parsed as Record<string, unknown>;
+              } catch { /* ignore */ }
+            }
             const catalogAction = shortcutCatalog.find(entry => String(entry.name ?? "") === wanted);
             let aiNote = `快捷动作「${wanted}」不存在或未启用`;
             if (catalogAction) {
@@ -755,7 +769,7 @@ Deno.serve(async (req: Request) => {
               const continuation = snapshot?.shortcutContinuation;
               const canContinue = resultMode !== "none"
                 && Boolean(continuation?.request && continuation.replyMarker && continuation.resultMarker);
-              const created = await sendShortcutCreate(catalogAction, canContinue);
+              const created = await sendShortcutCreate(catalogAction, canContinue, wantedArgs);
               aiNote = created.note;
               if (created.ok && created.commandId && canContinue && continuation) {
                 try {

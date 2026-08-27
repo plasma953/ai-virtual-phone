@@ -796,7 +796,9 @@ $CRON$)`);
         ? await encryptPayload(JSON.stringify(body.cloudConfig), config.payload_key)
         : null;
       const ruleRuns = body.ruleRuns && typeof body.ruleRuns === "object" ? body.ruleRuns : {};
-      // 离线快捷动作目录：只保留云端执行需要的字段
+      // 离线快捷动作目录：只保留云端需要的字段。description / parameterSchema
+      // 是给微信通道等云端提示词注入用的——parameterSchema 一剥，云端没法教
+      // 角色写带参数的标记，配了参数的动作在离线通道就永远只会光名调用。
       const shortcutActions = (Array.isArray(body.shortcutActions) ? body.shortcutActions : [])
         .slice(0, 20)
         .map(entry => entry && typeof entry === "object" ? entry as Record<string, unknown> : {})
@@ -808,6 +810,8 @@ $CRON$)`);
           deliveryMode: cleanText(entry.deliveryMode, 10) === "email" ? "email" : "push",
           resultMode: SHORTCUT_RESULT_MODES.has(cleanText(entry.resultMode, 20)) ? cleanText(entry.resultMode, 20) : "none",
           expiresInSeconds: Math.max(30, Math.min(900, Number(entry.expiresInSeconds) || 120)),
+          ...(cleanText(entry.description, 200) ? { description: cleanText(entry.description, 200) } : {}),
+          ...(cleanText(entry.parameterSchema, 8000) ? { parameterSchema: cleanText(entry.parameterSchema, 8000) } : {}),
         }));
       // 站点桥令牌：邮件模式的动作要靠它请站点代发（个人云没有发信服务）。
       // 客户端没带就保持原值，不要把已存的令牌洗掉。
