@@ -1299,7 +1299,7 @@ export function startWeixinCloudRealtimeSync(): () => void {
   if (typeof window === "undefined") return () => {};
 
   let stopped = false;
-  let pullInFlight = false;
+  let pullInFlight: Promise<void> | null = null;
   let uploadInFlight = false;
   let lastPullAt = 0;
   let uploadFlushTimer: number | null = null;
@@ -1326,18 +1326,24 @@ export function startWeixinCloudRealtimeSync(): () => void {
     if (!force && document.visibilityState !== "visible") return;
     const now = Date.now();
     if (!force && now - lastPullAt < REALTIME_PULL_INTERVAL_MS - 500) return;
-    pullInFlight = true;
     lastPullAt = now;
-    try {
-      const result = await pullWeixinCloudMessagesFromCloud({ limitPerBot: 200 });
-      if (result.added > 0) dispatchPulledSessions(result.sessionIds);
-      if (result.errors.length > 0) {
-        console.warn("[WeixinCloudSync] pull errors:", result.errors);
+    // 保存 promise 而不只是布尔：运行包同步要能等这一轮拉取落库（见 syncRuntimesNow）。
+    const running = (async () => {
+      try {
+        const result = await pullWeixinCloudMessagesFromCloud({ limitPerBot: 200 });
+        if (result.added > 0) dispatchPulledSessions(result.sessionIds);
+        if (result.errors.length > 0) {
+          console.warn("[WeixinCloudSync] pull errors:", result.errors);
+        }
+      } catch (err) {
+        console.warn("[WeixinCloudSync] auto pull failed:", err);
       }
-    } catch (err) {
-      console.warn("[WeixinCloudSync] auto pull failed:", err);
+    })();
+    pullInFlight = running;
+    try {
+      await running;
     } finally {
-      pullInFlight = false;
+      if (pullInFlight === running) pullInFlight = null;
     }
   };
 
@@ -1408,6 +1414,13 @@ export function startWeixinCloudRealtimeSync(): () => void {
     void deleteWeixinCloudMessagesFromCloud(messages).catch((err) => {
       console.warn("[WeixinCloudSync] cloud delete failed:", err);
     });
+
+    // 只删云消息对象不够，理由和上面编辑回复那条完全一样：删掉的若是运行包生成
+    // 之前的消息，它早就被烘焙进 bakedHistoryMessages 了，而助手按
+    // 「时间戳 > 运行包生成时刻」过滤云对象（assistant-core 的 generateReply），
+    // 那条云对象本来就不进提示词——删了等于没删，云端照样记得。
+    // 重新烘焙一次运行包才能真正让删除生效。防抖会把连删的一批合成一次。
+    scheduleRuntimeSync();
   };
 
   // ── 运行包自动同步 ──
@@ -1423,6 +1436,11 @@ export function startWeixinCloudRealtimeSync(): () => void {
     if (!force && Date.now() - lastRuntimeSyncAt < RUNTIME_AUTO_SYNC_THROTTLE_MS) return;
     runtimeSyncInFlight = true;
     try {
+      // 必须等这一轮拉取落库再烘焙。运行包会把本地聊天烤进 bakedHistory，
+      // 与「拉取微信云端聊天 → 写回本地」并发时，可能烤出一份缺最新几轮的历史，
+      // 云端助手照着它回答就是丢上下文——用户看到的就是角色突然不记得刚说过的话。
+      await pullInFlight;
+      if (stopped) return;
       await syncAllWeixinBotRuntimesToCloud();
       lastRuntimeSyncAt = Date.now();
     } catch (err) {
@@ -1442,8 +1460,8 @@ export function startWeixinCloudRealtimeSync(): () => void {
 
   const onVisibility = () => {
     if (document.visibilityState === "visible") {
-      void pullNow(true);
-      void syncRuntimesNow(false);
+      // 先拉聊天再同步运行包，别并发：见 syncRuntimesNow 里的说明
+      void pullNow(true).then(() => syncRuntimesNow(false));
     }
   };
 
@@ -1467,8 +1485,7 @@ export function startWeixinCloudRealtimeSync(): () => void {
   const interval = window.setInterval(() => {
     void pullNow(false);
   }, REALTIME_PULL_INTERVAL_MS);
-  void pullNow(true);
-  void syncRuntimesNow(false);
+  void pullNow(true).then(() => syncRuntimesNow(false));
 
   return () => {
     stopped = true;

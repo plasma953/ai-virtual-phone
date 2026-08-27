@@ -483,6 +483,28 @@ export async function PATCH(request: Request) {
     const current = currentResult.data[0] as Record<string, unknown> | undefined;
     if (!current) return NextResponse.json({ ok: false, error: "没有找到这份内容。" }, { status: 404 });
 
+    // 补封面：存量条目上架时还没有"拍缩略图"这回事，坐在大厅里等不到封面。
+    // 作者这边本地有整份材料，拍一张补上来即可。只写 cover 这一列，不动
+    // updated_at——补个封面不该把老条目全顶到大厅最前面。
+    if (action === "thumb") {
+      if (type !== "material") return NextResponse.json({ ok: false, error: "unsupported_target" }, { status: 400 });
+      const owner = await supabaseFetch<unknown[]>(
+        `${table}?id=eq.${encodeFilter(id)}&deleted_at=is.null&select=id,author_id&limit=1`,
+      );
+      if (!owner.ok) return NextResponse.json({ ok: false, error: owner.error }, { status: owner.status });
+      const row = owner.data[0] as Record<string, unknown> | undefined;
+      if (!row || cleanText(row.author_id, 160) !== userId) {
+        return NextResponse.json({ ok: false, error: "只能给自己发布的内容补封面。" }, { status: 403 });
+      }
+      const cover = await resolveCoverForWrite("material", id, record.cover);
+      const written = await supabaseFetch<unknown[]>(
+        `${table}?id=eq.${encodeFilter(id)}`,
+        { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ cover }) },
+      );
+      if (!written.ok) return NextResponse.json({ ok: false, error: written.error }, { status: written.status });
+      return NextResponse.json({ ok: true, cover });
+    }
+
     let liked = false;
     let saved = false;
     let likeCount = clampCount(current.like_count);

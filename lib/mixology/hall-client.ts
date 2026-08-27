@@ -146,6 +146,23 @@ export async function updateHallMaterial(publishedId: string, material: MixMater
 export async function updateHallRecipe(publishedId: string, input: MixHallRecipeShareInput): Promise<MixHallRecipe> {
     return await putHall({ type: "recipe", id: publishedId, ...input, ...authorFields() }) as MixHallRecipe;
 }
+/**
+ * 给已上架的条目补一张缩略图（存量条目上架时还没有拍图这回事）。
+ * 只写封面、不动更新时间，所以补封面不会把老条目顶到大厅最前面。
+ * 拍不出来就不发请求，返回空串。
+ */
+export async function backfillHallThumb(publishedId: string, material: MixMaterial): Promise<string> {
+    const cover = await captureMixMatThumb(material);
+    if (!cover) return "";
+    const res = await fetchJson<{ ok: boolean; cover?: string; error?: string }>("/api/mixology/hall", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "material", id: publishedId, action: "thumb", cover }),
+    });
+    if (!res.ok) throw new Error(res.error || "补封面失败");
+    return res.cover ?? "";
+}
+
 export async function removeHallEntry(type: MixHallType, id: string): Promise<void> {
     await fetchJson<{ ok: boolean }>("/api/mixology/hall", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, id }) });
 }

@@ -376,7 +376,7 @@ async function autoReplyPendingMessages(env, runtime, options = {}) {
       ...(deferredShortcut ? { shortcutCommandId: deferredShortcut.commandId } : {}),
     });
     if (deferredShortcut) {
-      const delivered = await deliverWeixinShortcut(env, deferredShortcut.commandId).catch(err => ({
+      const delivered = await deliverWeixinShortcut(env, deferredShortcut).catch(err => ({
         ok: false,
         error: errorMessage(err),
       }));
@@ -522,6 +522,9 @@ async function loadWeixinShortcutActions(env) {
         shortcutName: String(action?.shortcutName || "").trim(),
         description: String(action?.description || "").trim(),
         resultMode,
+        // 这里以前漏了 deliveryMode，于是不管用户配的是不是邮件自动执行，
+        // 建命令时都退成 push，最后必然弹一条要点按的通知。
+        deliveryMode: String(action?.deliveryMode || "push") === "email" ? "email" : "push",
         expiresInSeconds: Math.max(30, Math.min(900, Number(action?.expiresInSeconds) || 120)),
       };
     }).filter(action => action.actionId && action.name && action.shortcutName).slice(0, 20);
@@ -542,14 +545,19 @@ function appendWeixinShortcutCapability(messages, actions) {
       "<tool_availability>当前对话正通过微信进行：原生工具调用不可用；但下方明确列出的 iPhone 快捷动作可以使用。不要输出其他工具调用格式。</tool_availability>",
     );
   }
-  const menu = actions.map(action => action.description
-    ? `「${action.name}」（${action.description.slice(0, 40)}）`
-    : `「${action.name}」`).join("、");
+  const menu = actions.map(action => {
+    const description = action.description ? `（${action.description.slice(0, 40)}）` : "";
+    // 邮件送达由 iOS 自动化直接跑，推送送达要对方点通知——这会影响角色的措辞
+    const channel = action.deliveryMode === "email" ? "〔自动执行〕" : "〔需对方点确认〕";
+    return `「${action.name}」${description}${channel}`;
+  }).join("、");
   messages.push({
     role: "system",
     content: "（可选能力：你可以请求在对方的 iPhone 上执行这些快捷动作：" + menu
       + "。确有需要时，在回复中单独一行输出【快捷动作：动作名】，动作名必须与上面完全一致；"
-      + "系统会先把你本轮的其他话发到微信，再提示对方运行。会回传结果的动作，结果之后会自动交给你继续回复。"
+      + "系统会先把你本轮的其他话发到微信，再触发动作："
+      + "标着〔自动执行〕的对方手机会直接跑，标着〔需对方点确认〕的会先弹一条运行提示、TA点一下才执行。"
+      + "会回传结果的动作，结果之后会自动交给你继续回复。"
       + "不需要就不要输出，也不要解释本条说明。）",
   });
 }
@@ -632,11 +640,13 @@ async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstR
     shortcutName: action.shortcutName,
     arguments: {},
     resultMode: action.resultMode,
+    deliveryMode: action.deliveryMode,
     expiresInSeconds: action.expiresInSeconds,
     deferDelivery: true,
   });
   const commandId = String(created?.command?.id || "");
   if (!commandId) throw new Error("shortcut_command_id_missing");
+  const resultUrl = String(created?.resultUrl || "");
 
   if (action.resultMode !== "none") {
     try {
@@ -714,15 +724,67 @@ async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstR
     }
   }
 
-  return { commandId, actionName: action.name };
+  return {
+    commandId,
+    actionName: action.name,
+    actionId: action.actionId,
+    deliveryMode: action.deliveryMode,
+    resultUrl,
+  };
 }
 
-async function deliverWeixinShortcut(env, commandId) {
+async function deliverWeixinShortcut(env, deferred) {
+  // 邮件模式必须转投站点代发：个人云自己没有发信服务（RESEND_API_KEY 是站点的
+  // 环境变量），而网关的 shortcut-deliver 只会发 Web Push，对邮件命令直接返回
+  // 409。以前这里固定调 shortcut-deliver，所以用户配了邮件自动执行也照样弹通知。
+  if (deferred?.deliveryMode === "email") return deliverWeixinShortcutEmail(env, deferred);
   try {
-    const data = await callPersonalPushGateway(env, "shortcut-deliver", { commandId });
+    const data = await callPersonalPushGateway(env, "shortcut-deliver", { commandId: deferred.commandId });
     return data?.delivered === true
       ? { ok: true }
       : { ok: false, error: "shortcut_notification_not_delivered" };
+  } catch (err) {
+    return { ok: false, error: errorMessage(err) };
+  }
+}
+
+/** 请站点凭 site_bridge_token 代发触发邮件；命令行与结果回传仍留在个人云。 */
+async function deliverWeixinShortcutEmail(env, deferred) {
+  try {
+    if (!deferred.resultUrl) return { ok: false, error: "shortcut_result_url_missing" };
+    const configResponse = await supabaseRest(
+      env,
+      "push_server_config?id=eq.main&select=site_origin&limit=1",
+    );
+    const configRows = configResponse.ok ? await configResponse.json().catch(() => []) : [];
+    const siteOrigin = String(configRows?.[0]?.site_origin || "").trim();
+    if (!siteOrigin) return { ok: false, error: "site_origin_unknown" };
+
+    const tokenResponse = await supabaseRest(
+      env,
+      "push_bridge_config?user_id=eq.owner&select=site_bridge_token&limit=1",
+    );
+    const tokenRows = tokenResponse.ok ? await tokenResponse.json().catch(() => []) : [];
+    const siteBridgeToken = String(tokenRows?.[0]?.site_bridge_token || "");
+    // 令牌没同步上来，多半是个人云还没跑过新版 schema（site_bridge_token 是后加的列）
+    if (!siteBridgeToken) return { ok: false, error: "站点代发未启用：请到「设置 → 云服务部署」重新部署个人云" };
+
+    const response = await fetch(`${siteOrigin}/api/push/shortcut-commands/deliver-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: siteBridgeToken,
+        actionId: deferred.actionId,
+        actionName: deferred.actionName,
+        commandId: deferred.commandId,
+        resultUrl: deferred.resultUrl,
+        arguments: {},
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    return response.ok && data?.ok === true
+      ? { ok: true }
+      : { ok: false, error: String(data?.error || `site_email_http_${response.status}`) };
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
   }
