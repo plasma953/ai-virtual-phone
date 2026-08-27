@@ -29,10 +29,12 @@ export const PROMPT_GUARD_MERGE_TARGET_CHARS = 20000;
 /** 单条消息硬性天花板：合并后也绝不越过的红线 */
 export const PROMPT_GUARD_MAX_MESSAGE_CHARS = 32000;
 
-/** 整个 payload 总量硬帽（字符数）。约 1.8MB，
- * 按 0.75 token/char 折算约 135 万 token 上界，再留出系统区与回复余量。
+/** 整个 payload 总量硬帽（字符数）。
+ * 事故基线：~300 万字符 ≈ 105 万 token 触发上游 #sym:500（超过 Gemini 1M 上下文）。
+ * 按 0.35~0.75 token/char 折算，取 900k 字符可在最坏密度下仍远离该红线，
+ * 同时为系统提示词与回复输出保留余量。
  * 正常对话应远低于此值；触发即说明上游治理失效，此处只保证"能发出去"。*/
-export const PROMPT_GUARD_TOTAL_BUDGET_CHARS = 1800000;
+export const PROMPT_GUARD_TOTAL_BUDGET_CHARS = 900000;
 
 /** 巨型消息截断后保留的尾部长度 */
 const TAIL_KEEP_CHARS = 400;
