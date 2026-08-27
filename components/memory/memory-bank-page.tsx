@@ -1147,7 +1147,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         desc="整个请求的字符上限。调小更省 token；正常对话不受影响"
                         value={config.promptGuardTotalChars ?? 900000}
                         min={150000}
-                        max={3000000}
+                        max={1000000}
                         step={50000}
                         onChange={value => updateConfig({ promptGuardTotalChars: value })}
                     />

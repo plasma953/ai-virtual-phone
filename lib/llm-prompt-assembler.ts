@@ -1070,7 +1070,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         if (b.imageUrl) {
             // Vision message: build multi-part content with image (never merged)
             const parts: LLMContentPart[] = [];
-            if (processedText) parts.push({ type: "text", text: processedText });
+            if (processedText) parts.push({ type: "text", text: clampHistoryBodyChars(processedText) });
             parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
             finalPayload.push({
                 role: b.role,
@@ -1091,7 +1091,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
         } else {
             finalPayload.push({
                 role: b.role,
-                content: processedText,
+                content: b.role === "tool" ? processedText : clampHistoryBodyChars(processedText),
                 reasoning: b.reasoning,
                 openRouterReasoningDetails: b.openRouterReasoningDetails,
                 toolCalls: b.toolCalls,
@@ -2223,7 +2223,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         if (b.imageUrl) {
             // Vision message: build multi-part content with image (never merged)
             const parts: LLMContentPart[] = [];
-            if (processedText) parts.push({ type: "text", text: processedText });
+            if (processedText) parts.push({ type: "text", text: clampHistoryBodyChars(processedText) });
             parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
             finalPayload.push({
                 role: b.role,
@@ -2244,7 +2244,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
         } else {
             finalPayload.push({
                 role: b.role,
-                content: processedText,
+                content: b.role === "tool" ? processedText : clampHistoryBodyChars(processedText),
                 reasoning: b.reasoning,
                 openRouterReasoningDetails: b.openRouterReasoningDetails,
                 toolCalls: b.toolCalls,

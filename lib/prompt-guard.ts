@@ -18,10 +18,12 @@
 import { loadMemoryConfig } from "./memory-storage";
 
 // ── 绝对护栏（用户无法越过，防止误设再次炸穿上游或彻底失效） ──
-
-/** 总量硬帽的合法区间：低于 15 万字符连基本对话都装不下；高于 300 万必超模型上限 */
+/** 总量硬帽的合法区间：低于 15 万字符连基本对话都装不下；
+ *  事故复盘（bodySize≈3.14M 字符 ≈ 105 万 token 触发 #sym:500）证明
+ *  300 万字符上限已逼近上游 1M token 红线，绝对上限收紧至 100 万字符，
+ *  按 0.75 token/字符宽松估算 ≈ 75 万 token，留足安全余量。 */
 export const PROMPT_GUARD_TOTAL_ABS_MIN = 150000;
-export const PROMPT_GUARD_TOTAL_ABS_MAX = 3000000;
+export const PROMPT_GUARD_TOTAL_ABS_MAX = 1000000;
 
 /** 单条软限的合法区间 */
 export const PROMPT_GUARD_SOFT_ABS_MIN = 2000;
