@@ -1,40 +1,35 @@
 /**
  * prompt-guard —— Prompt 组装末端硬性防线
  *
- * 背景：2026-08 排查 Network Error 时发现，单条 user 消息体积达 3MB /
- * 约 105 万 token。根因链：
- *   1. 短记忆预算配置异常（KV 中 shortTermTokenBudget 为 0）时，
- *      池截断被 `budget > 0` 守卫完全旁路 → 全量注入；
- *   2. 统一池逐条丢弃算法无法处理"单条巨型消息"——它永远存活到最后；
- *   3. 富媒体渲染路径（appHistoryText / media_file 的 msg.content /
- *      app_card 正文等）无长度上限，外部桥接塞入百万字符畅通无阻；
- *   4. 相邻同角色块在最终 payload 阶段被合并成一条消息，把零散溢出
- *      聚合成单条 3MB 巨物，超出 Nginx client_body_buffer / fetch 缓冲。
+ * 背景：2026-08 排查 Network Error / 上游 #sym:500 时发现，聊天请求携带
+ * 单条 3MB / 约 105 万 token 的巨型消息体（超过 Gemini 1M 上下文红线），
+ * 导致任何小请求正常、真实聊天必炸的现象。
  *
- * 本模块提供三层兜底：
- *   A. clampHistoryBodyChars：单条历史正文钳制（软阈值降级摘要、硬上限截断）
- *   B. 池预算消毒：shortTermTokenBudget ∈ [1000, 150000]（在 short-term-assembler 内联）
+ * 三层防线：
+ *   A. clampHistoryBodyChars：单条历史正文钳制（软阈值折叠摘要、硬上限强裁）
+ *   B. 池预算消毒：shortTermTokenBudget ∈ [1000, 150000]（在 short-term-assembler 调用）
  *   C. guardFinalPayloadTotal：发往 API 前的总量硬帽（超限从最旧开始裁剪）
+ *
+ * 阈值来源（2026-08-27 改造）：全部由用户在「记忆银行 → 设置」页正向调整，
+ * 存于 MemoryConfig.promptGuardTotalChars / promptGuardSoftChars。
+ * 本模块只在读到非法值（0/NaN/越界）时按绝对护栏纠偏，绝不覆盖合法自定义值。
  */
 
-/** 单条块安全长度：超过则折叠为引用摘要 */
-export const PROMPT_GUARD_SOFT_LIMIT_CHARS = 12000;
+import { loadMemoryConfig } from "./memory-storage";
 
-/** 单条块绝对上限：任何情况下不得超过（防止极端行/不可折叠内容） */
-export const PROMPT_GUARD_HARD_LIMIT_CHARS = 24000;
+// ── 绝对护栏（用户无法越过，防止误设再次炸穿上游或彻底失效） ──
 
-/** 合并后的单条消息钳制目标：多块合并时整体收拢到该值附近 */
-export const PROMPT_GUARD_MERGE_TARGET_CHARS = 20000;
+/** 总量硬帽的合法区间：低于 15 万字符连基本对话都装不下；高于 300 万必超模型上限 */
+export const PROMPT_GUARD_TOTAL_ABS_MIN = 150000;
+export const PROMPT_GUARD_TOTAL_ABS_MAX = 3000000;
 
-/** 单条消息硬性天花板：合并后也绝不越过的红线 */
-export const PROMPT_GUARD_MAX_MESSAGE_CHARS = 32000;
+/** 单条软限的合法区间 */
+export const PROMPT_GUARD_SOFT_ABS_MIN = 2000;
+export const PROMPT_GUARD_SOFT_ABS_MAX = 500000;
 
-/** 整个 payload 总量硬帽（字符数）。
- * 事故基线：~300 万字符 ≈ 105 万 token 触发上游 #sym:500（超过 Gemini 1M 上下文）。
- * 按 0.35~0.75 token/char 折算，取 900k 字符可在最坏密度下仍远离该红线，
- * 同时为系统提示词与回复输出保留余量。
- * 正常对话应远低于此值；触发即说明上游治理失效，此处只保证"能发出去"。*/
-export const PROMPT_GUARD_TOTAL_BUDGET_CHARS = 900000;
+/** 用户未配置时的默认值 */
+const DEFAULT_TOTAL_CHARS = 900000;
+const DEFAULT_SOFT_CHARS = 12000;
 
 /** 巨型消息截断后保留的尾部长度 */
 const TAIL_KEEP_CHARS = 400;
@@ -50,30 +45,68 @@ export function estimateTokensLoose(text: string): number {
     return Math.ceil(text.length * 0.75);
 }
 
+function clampNum(raw: unknown, fallback: number, min: number, max: number): number {
+    const n = Math.round(Number(raw));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+}
+
+/** 当前生效的用户阈值（每次调用实时读取，滑块拖动立即生效） */
+function readUserThresholds(): { totalChars: number; softChars: number; hardChars: number } {
+    try {
+        const cfg = loadMemoryConfig();
+        const totalChars = clampNum(
+            cfg.promptGuardTotalChars, DEFAULT_TOTAL_CHARS,
+            PROMPT_GUARD_TOTAL_ABS_MIN, PROMPT_GUARD_TOTAL_ABS_MAX,
+        );
+        const softChars = clampNum(
+            cfg.promptGuardSoftChars, DEFAULT_SOFT_CHARS,
+            PROMPT_GUARD_SOFT_ABS_MIN, PROMPT_GUARD_SOFT_ABS_MAX,
+        );
+        // 硬限派生自软限（约2倍），保证恒有折叠缓冲带
+        const hardChars = softChars * 2 + 4000;
+        return { totalChars, softChars, hardChars };
+    } catch {
+        return {
+            totalChars: DEFAULT_TOTAL_CHARS,
+            softChars: DEFAULT_SOFT_CHARS,
+            hardChars: DEFAULT_SOFT_CHARS * 2 + 4000,
+        };
+    }
+}
+
 /**
- * A. 单条内容钳制：
- * - <= SOFT_LIMIT 原样返回（零开销快路径）；
- * - <= HARD_LIMIT 折叠中段为 "[内容过长已省略 N 字符]"；
- * - > HARD_LIMIT 截取头部 + 提示行 + 尾部。
+ * B. 池预算消毒：供 short-term-assembler 使用。
+ * UI 允许 1000~100000 token 自由设置；KV 可能存入 0/NaN/负数（事故根因#1），
+ * 此处强制纠偏到 [1000, 150000] 合法区间。
+ */
+export function sanitizeShortTermBudget(raw: unknown): number {
+    return clampNum(raw, 100000, 1000, 150000);
+}
+
+/**
+ * A. 单条内容钳制（阈值由用户设置驱动）：
+ * - <= 软限：历史原样返回（零开销快路径）；
+ * - <= 硬限：折叠中段为 "[内容过长已省略 N 字符]"；
+ * - > 硬限：截取头部 + 提示行 + 尾部。
  */
 export function clampHistoryBodyChars(text: string): string {
     if (typeof text !== "string") return "";
-    if (text.length <= PROMPT_GUARD_SOFT_LIMIT_CHARS) return text;
-    if (text.length <= PROMPT_GUARD_HARD_LIMIT_CHARS) {
-        const head = Math.floor(PROMPT_GUARD_SOFT_LIMIT_CHARS * 0.8);
+    const t = readUserThresholds();
+    if (text.length <= t.softChars) return text;
+    if (text.length <= t.hardChars) {
+        const head = Math.floor(t.softChars * 0.8);
         const omitted = text.length - head;
         const preview = text.slice(head, head + 60).split("\n")[0];
         return (
             text.slice(0, head) +
-            `\n[内容过长已省略 ${omitted} 字符 …${preview}]`
+            "\n[内容过长已省略 " + omitted + " 字符 …" + preview + "]"
         );
     }
-    const headLen = PROMPT_GUARD_SOFT_LIMIT_CHARS;
-    const tail =
-        text.length > TAIL_KEEP_CHARS ? text.slice(-TAIL_KEEP_CHARS) : "";
+    const tail = text.length > TAIL_KEEP_CHARS ? text.slice(-TAIL_KEEP_CHARS) : "";
     return (
-        text.slice(0, headLen) +
-        `\n…[本条内容高达 ${text.length} 字符（约 ${estimateTokensLoose(text)} token），为保护请求链路已强制裁剪；如需完整内容请让角色重新提供或通过文件发送]…` +
+        text.slice(0, t.softChars) +
+        "\n…[本条内容高达 " + text.length + " 字符（约 " + estimateTokensLoose(text) + " token），为保护请求链路已强制裁剪；如需完整内容请让角色重新提供或通过文件发送]…" +
         tail
     );
 }
@@ -83,12 +116,12 @@ const warnedKeys = new Set<string>();
 function warnOnce(key: string, msg: string) {
     if (warnedKeys.has(key)) return;
     warnedKeys.add(key);
-    console.warn(`[prompt-guard] ${msg}`);
+    console.warn("[prompt-guard] " + msg);
 }
 
 /**
  * C. 发送前总闸：对字符串 content 的消息统计并执行全局尾部裁剪。
- * 从 index 0（最旧）开始，直到总长回落到预算内；
+ * 从 index 0（最旧）开始，直到总长回落到用户设定的预算内；
  * 刚刚注入的最新消息（数组末尾）永不动刀。
  * @returns 实际裁掉的字符总数（用于日志观测）
  */
@@ -96,7 +129,7 @@ export function guardFinalPayloadTotal<T extends { role: string; content: unknow
     payload: T[],
 ): number {
     if (!Array.isArray(payload)) return 0;
-    const CHAR_BUDGET = PROMPT_GUARD_TOTAL_BUDGET_CHARS;
+    const CHAR_BUDGET = readUserThresholds().totalChars;
     const indices: number[] = [];
     let total = 0;
     for (let i = 0; i < payload.length; i++) {
@@ -110,7 +143,7 @@ export function guardFinalPayloadTotal<T extends { role: string; content: unknow
     if (total <= CHAR_BUDGET) return 0;
     warnOnce(
         "total_overflow",
-        `payload 文本总量 ${total} 字符超出硬帽 ${CHAR_BUDGET}，将从最旧的消息开始裁剪`,
+        "payload 文本总量 " + total + " 字符超出硬帽 " + CHAR_BUDGET + "，将从最旧的消息开始裁剪",
     );
     let cut = 0;
     // 已写入占位标记的膨胀量。标记本身是要发出去的真实字节，

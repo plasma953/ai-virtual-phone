@@ -9,6 +9,7 @@ import { loadMomentPosts, loadMomentComments } from "./moments-storage";
 import { loadCharacters } from "./character-storage";
 import { resolveUserIdentity } from "./settings-storage";
 import { loadMemoryConfig } from "./memory-storage";
+import { sanitizeShortTermBudget } from "./prompt-guard";
 import type { MemoryConfig } from "./memory-types";
 import { estimateTokens } from "./token-counter";
 import { loadStoryProjectionEntries } from "./story-storage";
@@ -956,7 +957,7 @@ export function prepareShortTermContext(
     // Activation context: full timeline for keyword matching (not truncated)
     const wbActivationContext = timeline.slice(-10).map(e => e.content).join("\n");
     // [prompt-guard] sanitize budget: KV may hold 0/NaN/negative which bypasses truncation (incident root #1)
-    const budget = Math.min(Math.max(Math.round(Number(memConfig.shortTermTokenBudget) || 100000), 1000), 150000);
+    const budget = sanitizeShortTermBudget(memConfig.shortTermTokenBudget);
     const currentTag = getFeatureTag(appId);
     const history = options?.history ?? [];
     const characterName = loadCharacters().find(c => c.id === characterId)?.name ?? "角色";
@@ -1227,10 +1228,8 @@ export function prepareGroupShortTermContext(
         ...history.filter(msg => msg.mediaType !== "tool_notice").map(msg => ({ timestamp: msg.createdAt, content: msg.content })),
     ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const wbActivationContext = activationPool.slice(-10).map(item => item.content).join("\n");
-
     // [prompt-guard] sanitize budget: KV may hold 0/NaN/negative which bypasses truncation (incident root #1)
-    const budget = Math.min(Math.max(Math.round(Number(memConfig.shortTermTokenBudget) || 100000), 1000), 150000);
-
+    const budget = sanitizeShortTermBudget(memConfig.shortTermTokenBudget);
     const raw: { tag: string; order: number; entries: NativeTimelineEntry[] }[] = [];
 
     const momentsEntries = timeline.filter(e => e.sourceApp === "moments");

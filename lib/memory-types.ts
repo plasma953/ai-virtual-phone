@@ -60,11 +60,19 @@ export type MemoryConfig = {
     dreamColdHeatThreshold: number;
     /** Dream 单次整合的最小碎片数量 */
     dreamMinFragments: number;
+    // ── Kiwi-only migration gate ──
+    /** 纯 Kiwi 模式：迁移完成后关闭传统时间序召回，只走热度+向量混合 */
+    kiwiOnlyMode?: boolean;
     // ── Calendar summary injection ──
     /** 日历套娃摘要开关：注入时按 今天/本周/本月 分层摘要 */
     calendarSummaryEnabled: boolean;
     /** 日历摘要的 token 预算 */
     calendarSummaryTokenBudget: number;
+    // ── Prompt Guard 用户自定义阈值（记忆银行设置页可调）──
+    /** 请求总量硬帽（字符）：超出后从最旧上下文开始裁剪，最新输入永不动刀 */
+    promptGuardTotalChars?: number;
+    /** 单条历史正文软限（字符）：超过则折叠中段为摘要 */
+    promptGuardSoftChars?: number;
     shortTermAllowedSources?: {
         chat?: boolean;
         group_chat?: boolean;
@@ -162,6 +170,8 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     dreamMinFragments: 5,
     calendarSummaryEnabled: false,
     calendarSummaryTokenBudget: 1500,
+    promptGuardTotalChars: 900000,
+    promptGuardSoftChars: 12000,
     shortTermAllowedSources: {
         chat: true,
         group_chat: true,

@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Shield, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { Toggle } from "@/components/ui/form";
@@ -1137,6 +1137,39 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     />
                 </div>
 
+                {/* ── Prompt Guard: 用户自定义请求体积阈值 ── */}
+                <p className="menu-group-desc mx-2">请求体积防线（超出后自动裁剪，保链路畅通）</p>
+                <div className="menu-group">
+                    <MemorySettingsSliderItem
+                        icon={Shield}
+                        color={BINDING_ACCENTS.api}
+                        label="总量硬帽"
+                        desc="整个请求的字符上限。调小更省 token；正常对话不受影响"
+                        value={config.promptGuardTotalChars ?? 900000}
+                        min={150000}
+                        max={3000000}
+                        step={50000}
+                        onChange={value => updateConfig({ promptGuardTotalChars: value })}
+                    />
+                    <MemorySettingsSliderItem
+                        icon={Shield}
+                        color={BINDING_ACCENTS.embedding}
+                        label="单条软限"
+                        desc="单条历史超过该长度会折叠中段为摘要"
+                        value={config.promptGuardSoftChars ?? 12000}
+                        min={2000}
+                        max={200000}
+                        step={2000}
+                        onChange={value => updateConfig({ promptGuardSoftChars: value })}
+                    />
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={Shield} color={BINDING_ACCENTS.voice} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">裁剪顺序</span>
+                            <span className="menu-desc">从最旧上下文开始丢弃，你刚发的消息绝不会被裁</span>
+                        </div>
+                    </div>
+                </div>
                 {/* Token budget sliders */}
                 <p className="menu-group-desc mx-2">控制截断量</p>
                 <div className="menu-group">
