@@ -56,6 +56,9 @@ export type SurfSettings = {
     chatGapMinutes: number;
     /** 尊重推送静默时段（深夜不打扰） */
     quietHoursEnabled: boolean;
+    /** 静默时段起止（HH:mm，独立于全局推送设置，可跨午夜） */
+    quietStart: string;
+    quietEnd: string;
     /** 反刍闸窗口（小时）：统计过去多久内的搜索痕迹 */
     ruminationWindowHours: number;
     /** 反刍闸比对条数：最多回看多少条痕迹 */
@@ -72,9 +75,7 @@ export type SurfSettings = {
     tavilySearchDepth: "basic" | "advanced";
     /** 见闻库存上限：超限自动淘汰最旧的未分享见闻 */
     notesLimit: number;
-    /** 分享目标会话 id（空 = 第一个非群聊会话；仍空则只沉淀不分享） */
-    targetSessionId: string;
-    /** 专用 API 配置 id（空 = 跟随分享目标会话的角色绑定） */
+    /** 专用 API 配置 id（空 = 第一个带 Key 的配置） */
     apiConfigId: string;
     /** 自动分享：见闻 worthSharing 时是否走分享策略主动发出 */
     autoShare: boolean;
@@ -95,7 +96,6 @@ export type SurfNote = {
     shareText?: string;
     createdAt: number;
     sharedAt?: number;
-    sharedSessionId?: string;
 };
 
 export type SurfTrace = {
@@ -128,6 +128,8 @@ export function getDefaultSurfSettings(): SurfSettings {
         intervalMinutes: 180,
         chatGapMinutes: 20,
         quietHoursEnabled: true,
+        quietStart: "23:00",
+        quietEnd: "07:00",
         ruminationWindowHours: 96,
         ruminationTraceLimit: 12,
         ruminationHitThreshold: 2,
@@ -136,7 +138,6 @@ export function getDefaultSurfSettings(): SurfSettings {
         tavilyMaxResults: 4,
         tavilySearchDepth: "basic",
         notesLimit: 50,
-        targetSessionId: "",
         apiConfigId: "",
         autoShare: true,
         freedomPrompt: DEFAULT_FREEDOM_PROMPT,
@@ -161,6 +162,8 @@ function sanitizeSurfSettings(raw: unknown): SurfSettings {
         intervalMinutes: num(r.intervalMinutes, def.intervalMinutes, 15, 10080),
         chatGapMinutes: num(r.chatGapMinutes, def.chatGapMinutes, 1, 2880),
         quietHoursEnabled: typeof r.quietHoursEnabled === "boolean" ? r.quietHoursEnabled : def.quietHoursEnabled,
+        quietStart: /^\d{1,2}:\d{2}$/.test(str(r.quietStart, "")) ? str(r.quietStart, "") : def.quietStart,
+        quietEnd: /^\d{1,2}:\d{2}$/.test(str(r.quietEnd, "")) ? str(r.quietEnd, "") : def.quietEnd,
         ruminationWindowHours: num(r.ruminationWindowHours, def.ruminationWindowHours, 1, 720),
         ruminationTraceLimit: num(r.ruminationTraceLimit, def.ruminationTraceLimit, 3, 100),
         ruminationHitThreshold: num(r.ruminationHitThreshold, def.ruminationHitThreshold, 1, 50),
@@ -169,7 +172,6 @@ function sanitizeSurfSettings(raw: unknown): SurfSettings {
         tavilyMaxResults: num(r.tavilyMaxResults, def.tavilyMaxResults, 1, 10),
         tavilySearchDepth: r.tavilySearchDepth === "advanced" ? "advanced" : def.tavilySearchDepth,
         notesLimit: num(r.notesLimit, def.notesLimit, 5, 500),
-        targetSessionId: str(r.targetSessionId, ""),
         apiConfigId: str(r.apiConfigId, ""),
         autoShare: typeof r.autoShare === "boolean" ? r.autoShare : def.autoShare,
         freedomPrompt: str(r.freedomPrompt, def.freedomPrompt) || def.freedomPrompt,

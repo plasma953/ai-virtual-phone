@@ -11,7 +11,6 @@
 //       tool-storage 内置 Tavily（builtin_search）、llm-provider-adapter + llm-http（LLM 直连）。
 
 import { bgSetInterval } from "./bg-timer";
-import { isWithinPushQuietHours } from "./push-client";
 import {
     loadSurfSettings,
     loadSurfNotes,
@@ -35,8 +34,10 @@ import {
     type LlmRequestMessage,
 } from "./llm-provider-adapter";
 import { fetchLlmPayload } from "./llm-http";
-import { loadChatSessions, loadChatMessages, pushChatMessage, type ChatSession } from "./chat-storage";
-import { dispatchChatMessageNotice } from "./chat-notification-events";
+import { loadChatSessions, loadChatMessages } from "./chat-storage";
+import { dispatchSurfShareNotice } from "./chat-notification-events";
+import { MacroEngine } from "./macro-engine";
+import { resolveUserIdentity } from "./settings-storage";
 
 // ── n-gram 反刍闸 ────────────────────────────────────────────────────────────
 // 中文按字滑窗、英文按单词滑窗、数字串整体成一个 token。
@@ -316,23 +317,37 @@ async function decideShare(
     }
 }
 
-// ── 会话定位 ────────────────────────────────────────────────────────────────
-
-export function resolveShareSession(settings: SurfSettings): ChatSession | null {
-    if (typeof window === "undefined") return null;
+// ── 静默时段（独立于全局推送设置，可跨午夜） ────────────────────────────────
+export function isWithinSurfQuietHours(atMs: number, start: string, end: string): boolean {
+    const m = (s: string): number => {
+        const match = /^(\d{1,2}):(\d{2})$/.exec(s);
+        if (!match) return -1;
+        const h = Number(match[1]);
+        const min = Number(match[2]);
+        if (h > 23 || min > 59) return -1;
+        return h * 60 + min;
+    };
+    const startMinutes = m(start);
+    const endMinutes = m(end);
+    if (startMinutes < 0 || endMinutes < 0 || startMinutes === endMinutes) return false;
+    const date = new Date(atMs);
+    const nowMinutes = date.getHours() * 60 + date.getMinutes();
+    return startMinutes < endMinutes
+        ? nowMinutes >= startMinutes && nowMinutes < endMinutes
+        : nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+// ── 宏展开：分享文案支持 AIVP 标准宏（{{user}} / {{char}} / {{time}} 等） ────
+// 冲浪分享不绑定角色卡：char 固定为 AI 自身，user 取用户身份名，均与聊天上下文解耦。
+export function expandSurfShareText(text: string): string {
     try {
-        const sessions = loadChatSessions().filter(s => !s.isBlacklisted);
-        if (!sessions.length) return null;
-        if (settings.targetSessionId) {
-            const hit = sessions.find(s => s.id === settings.targetSessionId);
-            if (hit) return hit;
-        }
-        return sessions.find(s => !s.isGroup) ?? sessions[0];
+        const userName = resolveUserIdentity()?.name || "用户";
+        const engine = new MacroEngine("AI", userName);
+        engine.timeContext = "";
+        return engine.expand(text);
     } catch {
-        return null;
+        return text;
     }
 }
-
 export async function lastUserMessageAt(): Promise<number | null> {
     if (typeof window === "undefined") return null;
     try {
@@ -389,7 +404,7 @@ export async function runSurfRound(trigger: SurfTrigger): Promise<string> {
     try {
         const config = resolveSurfApiConfig(settings);
         if (!config) return finish("跳过：未找到可用的 API 配置（请在设置页指定或先配置大模型接口）", "无可用 API 配置");
-        const quiet = settings.quietHoursEnabled && isWithinPushQuietHours(Date.now());
+        const quiet = settings.quietHoursEnabled && isWithinSurfQuietHours(Date.now(), settings.quietStart, settings.quietEnd);
         const notes = loadSurfNotes();
         const traces = loadSurfTraces();
         const recentTopics = traces.slice(-8).map(t => t.query);
@@ -418,17 +433,14 @@ export async function runSurfRound(trigger: SurfTrigger): Promise<string> {
             }
             const verdict = await decideShare(settings, config, candidates[0]);
             if (!verdict.share) return finish(`分享决策为否：不打扰`);
-            const sess = resolveShareSession(settings);
-            if (!sess) return finish("没有可用会话，只沉淀不分享");
-            const body = verdict.text.slice(0, 1500);
-            pushChatMessage({ sessionId: sess.id, role: "assistant", content: body });
-            dispatchChatMessageNotice({ sessionId: sess.id, body, isGroup: sess.isGroup });
             const chosen = candidates[0];
-            const updated = notes.map(n => n.id === chosen.id ? { ...n, sharedAt: Date.now(), sharedSessionId: sess.id } : n);
+            const body = expandSurfShareText(verdict.text.slice(0, 1500));
+            dispatchSurfShareNotice({ noteId: chosen.id, title: chosen.title, body });
+            const updated = notes.map(n => n.id === chosen.id ? { ...n, sharedAt: Date.now() } : n);
             saveSurfNotes(updated);
             state0.totalShared++;
             saveSurfState({ ...state0 });
-            return finish(`已分享见闻「${chosen.title.slice(0, 30)}」到会话 ${sess.id.slice(0, 8)}`);
+            return finish(`已分享见闻「${chosen.title.slice(0, 30)}」（独立通知，未写入聊天）`);
         }
 
         // 2) surf：反刍闸 + 禁区，撞车时换题一次
@@ -480,18 +492,14 @@ export async function runSurfRound(trigger: SurfTrigger): Promise<string> {
         if (note.worthSharing && settings.autoShare && !quiet) {
             const verdict = await decideShare(settings, config, note);
             if (verdict.share) {
-                const sess = resolveShareSession(settings);
-                if (sess) {
-                    const body = verdict.text.slice(0, 1500);
-                    pushChatMessage({ sessionId: sess.id, role: "assistant", content: body });
-                    dispatchChatMessageNotice({ sessionId: sess.id, body, isGroup: sess.isGroup });
-                    const updatedNotes = loadSurfNotes().map(n => n.id === note.id ? { ...n, sharedAt: Date.now(), sharedSessionId: sess.id } : n);
-                    saveSurfNotes(updatedNotes);
-                    const state2 = loadSurfState();
-                    state2.totalShared++;
-                    saveSurfState(state2);
-                    return finish(`冲浪完成并已分享「${note.title.slice(0, 30)}」`);
-                }
+                const body = expandSurfShareText(verdict.text.slice(0, 1500));
+                dispatchSurfShareNotice({ noteId: note.id, title: note.title, body });
+                const updatedNotes = loadSurfNotes().map(n => n.id === note.id ? { ...n, sharedAt: Date.now() } : n);
+                saveSurfNotes(updatedNotes);
+                const state2 = loadSurfState();
+                state2.totalShared++;
+                saveSurfState(state2);
+                return finish(`冲浪完成并已分享「${note.title.slice(0, 30)}」（独立通知，未写入聊天）`);
             }
         }
         return finish(`冲浪完成：沉淀见闻「${note.title.slice(0, 30)}」${quiet ? "（静默时段，未推送）" : ""}`);

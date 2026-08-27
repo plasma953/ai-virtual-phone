@@ -38,15 +38,8 @@ import {
     stopSurfService,
     isSurfServiceRunning,
     getSurfDashboard,
-    resolveShareSession,
 } from "@/lib/surf-engine";
 import { loadApiConfigs } from "@/lib/settings-storage";
-import { loadChatSessions, type ChatSession } from "@/lib/chat-storage";
-
-function sessionLabel(s: ChatSession): string {
-    if (s.isGroup) return s.groupName || `群聊 ${s.id}`;
-    return s.alias || `User_${s.contactId.slice(-4)}`;
-}
 
 function formatTime(ts?: number): string {
     if (!ts) return "—";
@@ -78,6 +71,37 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
     const [confirmClearTraces, setConfirmClearTraces] = useState(false);
     const [bannedDraft, setBannedDraft] = useState<string>(() => loadSurfSettings().bannedTopics.join("，"));
     const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const noteListRef = useRef<HTMLDivElement | null>(null);
+    // 深链聚焦：桌面横幅点击后定位到对应见闻并闪烁高亮
+    const focusSurfNote = useCallback((noteId?: string | null) => {
+        if (!noteId) return;
+        window.setTimeout(() => {
+            const el = noteListRef.current?.querySelector(`[data-surf-note-id="${CSS.escape(noteId)}"]`);
+            if (!el) return;
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            el.classList.add("surf-note-flash");
+            window.setTimeout(() => el.classList.remove("surf-note-flash"), 2400);
+        }, 150);
+    }, []);
+    // 挂载时消费深链标记 + 运行时响应桌面横幅的聚焦事件
+    useEffect(() => {
+        try {
+            const pending = sessionStorage.getItem("surf-note-focus");
+            if (pending) {
+                sessionStorage.removeItem("surf-note-focus");
+                focusSurfNote(pending);
+            }
+        } catch { /* ignore */ }
+        const onFocus = (e: Event) => {
+            const { noteId } = (e as CustomEvent).detail ?? {};
+            if (noteId) {
+                try { sessionStorage.removeItem("surf-note-focus"); } catch { /* ignore */ }
+                focusSurfNote(noteId);
+            }
+        };
+        window.addEventListener("surf-focus-note", onFocus);
+        return () => window.removeEventListener("surf-focus-note", onFocus);
+    }, [focusSurfNote]);
 
     // 后台服务运行状态需要轮询（可能被其它页面起停）
     useEffect(() => {
@@ -180,9 +204,6 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
     };
 
     const apiConfigs = loadApiConfigs();
-    const sessions = loadChatSessions().filter(s => !s.isBlacklisted);
-    const resolvedShareSession = resolveShareSession(settings);
-
     return (
         <div className="flex flex-col gap-[16px]">
             {/* ── 说明与状态卡 ── */}
@@ -291,9 +312,40 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
                     <div className="ui-icon-circle shrink-0"><MessageSquare size={20} /></div>
                     <div className="flex-1 flex flex-col gap-1 min-w-0">
                         <span className="menu-label">静默时段（Quiet Hours）</span>
-                        <span className="menu-desc !mt-0">深夜免打扰时段内，AI 只沉淀见闻、不推送任何消息</span>
+                        <span className="menu-desc !mt-0">深夜免打扰时段内，AI 只沉淀见闻、不推送任何通知</span>
                     </div>
                     <Toggle checked={settings.quietHoursEnabled} onChange={v => patchField("quietHoursEnabled", v)} />
+                </div>
+                <div className={`flex flex-col gap-3 mt-4 ${settings.quietHoursEnabled ? "" : "opacity-40 pointer-events-none"}`}>
+                    <div className="flex items-center gap-3">
+                        <label className="flex flex-col gap-1 flex-1">
+                            <span className="menu-label">开始时间</span>
+                            <input
+                                type="time"
+                                className="ui-input"
+                                value={settings.quietStart}
+                                onChange={e => {
+                                    const v = e.target.value;
+                                    if (/^\d{2}:\d{2}$/.test(v)) patchField("quietStart", v);
+                                }}
+                            />
+                        </label>
+                        <label className="flex flex-col gap-1 flex-1">
+                            <span className="menu-label">结束时间</span>
+                            <input
+                                type="time"
+                                className="ui-input"
+                                value={settings.quietEnd}
+                                onChange={e => {
+                                    const v = e.target.value;
+                                    if (/^\d{2}:\d{2}$/.test(v)) patchField("quietEnd", v);
+                                }}
+                            />
+                        </label>
+                    </div>
+                    <span className="menu-desc !mt-0">
+                        独立于全局推送设置，只约束冲浪见闻分享。起止相同视为关闭；允许跨午夜（如 23:00 → 07:00）。
+                    </span>
                 </div>
             </div>
 
@@ -402,7 +454,7 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
                     <div className="ui-icon-circle shrink-0"><Database size={20} /></div>
                     <div className="flex-1 flex flex-col gap-1 min-w-0">
                         <span className="menu-label">沉淀与分享</span>
-                        <span className="menu-desc !mt-0">见闻存本地、超限自动淘汰最旧的未分享条目；分享目标会话与模型绑定</span>
+                        <span className="menu-desc !mt-0">见闻存本地、超限自动淘汰最旧的未分享条目；分享走独立通知，不写入任何聊天</span>
                     </div>
                 </div>
                 <div className="flex flex-col gap-4 mt-4">
@@ -417,29 +469,12 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
                         onChange={e => patchField("notesLimit", Number(e.target.value))}
                     />
                     <div className="flex flex-col gap-1.5">
-                        <span className="menu-label">分享目标会话</span>
-                        <Select
-                            value={settings.targetSessionId}
-                            onChange={e => patchField("targetSessionId", e.target.value)}
-                        >
-                            <option value="">自动（第一个非群聊会话）</option>
-                            {sessions.map(s => (
-                                <option key={s.id} value={s.id}>
-                                    {sessionLabel(s)}{s.isGroup ? "（群聊）" : ""}
-                                </option>
-                            ))}
-                        </Select>
-                        <span className="menu-desc !mt-0">
-                            当前实际分享到：{resolvedShareSession ? sessionLabel(resolvedShareSession) : "无可用会话（只沉淀不分享）"}
-                        </span>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
                         <span className="menu-label">决策模型 API 配置</span>
                         <Select
                             value={settings.apiConfigId}
                             onChange={e => patchField("apiConfigId", e.target.value)}
                         >
-                            <option value="">跟随分享目标会话的角色绑定</option>
+                            <option value="">自动（第一个带 Key 的配置）</option>
                             {apiConfigs.map(c => (
                                 <option key={c.id} value={c.id}>
                                     {c.name || c.id}（{c.provider}）
@@ -504,11 +539,11 @@ export function SurfSettingsPage({ onNotice }: { onNotice?: (msg: string) => voi
                 {dashboard.notes.length === 0 ? (
                     <div className="menu-desc !mt-0 py-4 text-center">还没有见闻。开一轮冲浪，或等待 AI 自己出去逛。</div>
                 ) : (
-                    <div className="flex flex-col gap-2 mt-3 max-h-[360px] overflow-y-auto">
+                    <div ref={noteListRef} className="flex flex-col gap-2 mt-3 max-h-[360px] overflow-y-auto">
                         {[...dashboard.notes]
                             .sort((a, b) => b.createdAt - a.createdAt)
                             .map(note => (
-                                <div key={note.id} className="flex items-start gap-2 rounded-xl border p-3" style={{ borderColor: "var(--c-card-border)", backgroundColor: "var(--c-panel)" }}>
+                                <div key={note.id} data-surf-note-id={note.id} className="flex items-start gap-2 rounded-xl border p-3" style={{ borderColor: "var(--c-card-border)", backgroundColor: "var(--c-panel)" }}>
                                     <div className="flex-1 flex flex-col gap-1 min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <span className="menu-label">{note.title || "（无标题见闻）"}</span>

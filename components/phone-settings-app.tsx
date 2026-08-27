@@ -349,6 +349,14 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
             }
         }
     }, []);
+    // 冲浪见闻深链：桌面横幅点击 -> 直接落到「自主冲浪」子页（标记由 SurfSettingsPage 消费后清除）
+    useEffect(() => {
+        try {
+            if (sessionStorage.getItem("surf-note-focus")) {
+                setCurrentPage("surf");
+            }
+        } catch { /* ignore */ }
+    }, []);
 
     useEffect(() => {
         const settings = loadChatAppSettings();

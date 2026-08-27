@@ -6306,6 +6306,28 @@
   font-size: calc(11px*var(--app-text-scale,1));
   font-weight: 700;
 }
+/* AI 自主冲浪见闻横幅：系统通知风格，与联系人消息横幅视觉区分 */
+.surf-share-notice-bar {
+  background: color-mix(in srgb, var(--c-primary) 9%, var(--c-surface));
+  border: 1px solid color-mix(in srgb, var(--c-primary) 28%, transparent);
+}
+.surf-share-notice-avatar {
+  background: color-mix(in srgb, var(--c-primary) 22%, var(--c-surface));
+  color: var(--c-primary);
+}
+/* 见闻库条目聚焦闪烁（桌面横幅点击深链） */
+.surf-note-flash {
+  animation: surf-note-flash 2.2s ease-out;
+}
+@keyframes surf-note-flash {
+  0%, 55% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-primary) 65%, transparent);
+    background-color: color-mix(in srgb, var(--c-primary) 12%, var(--c-panel));
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
 
 /* Moments Feed Dynamic Header */
 .moments-feed-page:not(.is-scrolled) .page-header {
