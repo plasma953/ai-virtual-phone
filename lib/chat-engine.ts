@@ -54,7 +54,7 @@ import {
 } from "./llm-provider-adapter";
 import { setDebugPromptSnapshot, type DebugPromptSnapshot } from "./debug-store";
 import { extractFinishReason } from "./api-helpers";
-import { classifyHttpError, fetchWithRelayRetry } from "./relay-retry";
+import { classifyHttpError, fetchWithRelayRetry, describeNetworkFetchError } from "./relay-retry";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
@@ -884,7 +884,7 @@ export async function sendLLMStreamRequest(
             throw new ChatEngineError("AI 流式回复超时（500秒），请重试。");
         }
         if (error instanceof ChatEngineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeNetworkFetchError(error instanceof Error ? error.message : String(error));
         throw new ChatEngineError(`Stream Network Error connecting to AI Provider: ${detail}`);
     } finally {
         clearTimeout(llmTimeout);
@@ -1027,7 +1027,7 @@ export async function sendLLMRequest(
             throw new ChatEngineError("AI 回复超时（500秒），请重试。");
         }
         if (error instanceof ChatEngineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeNetworkFetchError(error instanceof Error ? error.message : String(error));
         throw new ChatEngineError(
             `Network Error connecting to AI Provider: ${detail}\n请求诊断：provider=${requestDebugInfo.provider}, model=${requestDebugInfo.model}, app=${requestDebugInfo.appId}, messages=${requestDebugInfo.messageCount}, bodySize=${requestDebugInfo.bodySize}, estimatedTokens=${requestDebugInfo.bodyTokenEstimate}, largestMessage=${requestDebugInfo.largestMessageSize}, largestRole=${requestDebugInfo.largestMessageRole}, largestIndex=${requestDebugInfo.largestMessageIndex}`,
         );
@@ -1405,7 +1405,7 @@ export async function sendLLMToolStreamRequest(
             throw new ChatEngineError("AI 原生动作流式回复超时（500秒），请重试。");
         }
         if (error instanceof ChatEngineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeNetworkFetchError(error instanceof Error ? error.message : String(error));
         throw new ChatEngineError(`Tool Stream Network Error connecting to AI Provider: ${detail}`);
     } finally {
         clearTimeout(llmTimeout);
@@ -1525,7 +1525,7 @@ export async function sendLLMToolRequest(
             throw new ChatEngineError("AI 原生动作回复超时（500秒），请重试。");
         }
         if (error instanceof ChatEngineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
+        const detail = describeNetworkFetchError(error instanceof Error ? error.message : String(error));
         throw new ChatEngineError(`Tool Network Error connecting to AI Provider: ${detail}`);
     } finally {
         clearTimeout(llmTimeout);

@@ -31,12 +31,48 @@ export function classifyHttpError(status: number, body: string, url: string): st
     return `API Error ${status}: ${body}`;
 }
 
+/**
+ * 把 fetch 网络层异常翻译成可读提示：明确「与消息体积/token 数无关」，
+ * 避免用户误以为是自己内容太长导致（实测 2.6MB 请求体都能 200 通过）。
+ */
+export function describeNetworkFetchError(detail: string): string {
+    if (/failed to fetch|load failed|networkerror|err_(connection|network|internet)|fetch failed/i.test(detail)) {
+        return "设备网络瞬断（Wi‑Fi/流量切换、DNS 或 TLS 抖动），请求未到达服务器——与消息体积和 token 数无关。已自动重试仍未成功，请稍候重发。";
+    }
+    return detail;
+}
+
 export async function fetchWithRelayRetry(
     doFetch: () => Promise<Response>,
     externalSignal?: AbortSignal,
 ): Promise<Response> {
     for (let attempt = 0; attempt <= RELAY_RETRY_ATTEMPTS; attempt += 1) {
-        const response = await doFetch();
+        let response: Response;
+        try {
+            response = await doFetch();
+        } catch (error) {
+            // 网络层异常（TypeError: Failed to fetch / Load failed）：请求根本没拿到
+            // HTTP 响应——瞬断网、DNS 抖动、TLS 重置、中继瞬时重启等瞬时抖动。
+            // 与消息体积/内容无关（fetch 抛异常时服务器从未给出状态码）。
+            // 移动端网络极易瞬时抖动，这里必须自动重试（此前只重试 HTTP 429/5xx，
+            // 网络层异常直接穿透导致零容忍报错）。
+            if (error instanceof DOMException && error.name === "AbortError") throw error;
+            if (externalSignal?.aborted) throw error;
+            if (attempt >= RELAY_RETRY_ATTEMPTS) throw error;
+            // 网络抖动的恢复窗口比 HTTP 错误更短，退避稍快（2x 步进）
+            const waitMs = RELAY_RETRY_BASE_DELAY_MS * (attempt + 1) * 2;
+            console.warn(`[relay-retry] 网络层异常（${error instanceof Error ? error.message : String(error)}），第 ${attempt + 1}/${RELAY_RETRY_ATTEMPTS} 次自动重试，等待 ${waitMs}ms`);
+            await new Promise<void>((resolve) => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const onAbort = () => { if (timer) clearTimeout(timer); resolve(); };
+                timer = setTimeout(() => {
+                    externalSignal?.removeEventListener("abort", onAbort);
+                    resolve();
+                }, waitMs);
+                externalSignal?.addEventListener("abort", onAbort);
+            });
+            continue;
+        }
         if (response.ok) return response;
         const retryable = response.status === 429 || response.status >= 500;
         if (!retryable || attempt >= RELAY_RETRY_ATTEMPTS) return response;
