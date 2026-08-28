@@ -11,7 +11,8 @@ import {
     heatColor,
     type ConstellationNode,
 } from "@/lib/memory-visualize";
-import { X, Sparkles } from "lucide-react";
+import { DEFAULT_SPLIT_THRESHOLD } from "@/lib/memory-migration";
+import { X, Sparkles, Scissors } from "lucide-react";
 
 const VIEW = 360;                 // SVG viewBox 尺寸
 const TAU = Math.PI * 2;
@@ -48,9 +49,13 @@ function Starfield({ seed = 7 }: { seed?: number }) {
 export function MemoryConstellation({
     entries,
     config,
+    onSplitEntry,
 }: {
     entries: MemoryEntry[];
     config: MemoryConfig;
+    /** 星图内拆分大块记忆：把节点详情里的「拆分」动作交还给记忆银行页
+     * （复用其全局的 预览→应用 两段式拆分面板，防失控）。 */
+    onSplitEntry?: (entry: MemoryEntry) => void;
 }) {
     const snapshot = useMemo(
         () => buildMemorySnapshot(entries, config.heatHalfLifeDays ?? 7),
@@ -250,6 +255,31 @@ export function MemoryConstellation({
                                     </>
                                 )}
                             </div>
+                            {/* ── 星图内拆分：大块记忆直接在星图里原子化 ── */}
+                            {onSplitEntry
+                                && selected.kind === "long_term"
+                                && selected.content.length >= (config.splitThreshold ?? DEFAULT_SPLIT_THRESHOLD) && (
+                                    <button
+                                        className="ui-btn ui-btn-outline"
+                                        style={{
+                                            marginTop: 10,
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            gap: 6,
+                                            padding: "8px 12px",
+                                            borderRadius: 12,
+                                        }}
+                                        onClick={() => {
+                                            const entry = entries.find(e => e.id === selected.id);
+                                            setSelected(null);
+                                            if (entry) onSplitEntry(entry);
+                                        }}
+                                    >
+                                        <Scissors size={14} />
+                                        拆分此记忆（{selected.content.length} 字大块）
+                                    </button>
+                                )}
                         </div>
                     </div>
                 </div>

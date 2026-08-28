@@ -871,6 +871,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         <MemoryConstellation
                             entries={[...longTermEntries, ...coreEntries].filter(isMemoryActive)}
                             config={config}
+                            onSplitEntry={openSplitPreview}
                         />
                     ) : activeTab === "core" ? (
                         renderMemoryEntries("core", coreEntries, "暂无核心记忆。长期记忆累计到设定条数后会自动提炼，也可以手动新增。")
