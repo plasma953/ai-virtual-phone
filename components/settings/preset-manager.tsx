@@ -564,6 +564,38 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
         updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
     };
 
+    /**
+     * 快捷添加系统注入条目（marker）：核心记忆/长期记忆/短期记忆/人设/世界书等。
+     * marker 条目内容由运行时注入，位置由 prompt_order 决定——添加后可在列表里
+     * 拖动到任意位置，实现「记忆插入位置在预设系统里自定义」。
+     */
+    const createMarkerEntryAtEnd = (preset: PresetConfig, markerName: string, identifier: string) => {
+        if (preset.prompts.some(p => p.identifier === identifier)) return; // 已存在，不重复添加
+        const newPrompt: Prompt = {
+            identifier,
+            name: markerName,
+            role: "system",
+            content: "",
+            injection_position: 0,
+            injection_depth: 0,
+            enabled: true,
+            marker: true,
+        };
+        const newPrompts = [...(preset.prompts || []), newPrompt];
+        const newOrder = newPrompts.map(p => ({
+            identifier: p.identifier,
+            enabled: preset.prompt_order
+                ? (preset.prompt_order.find(o => o.identifier === p.identifier)?.enabled ?? p.enabled)
+                : p.enabled,
+        }));
+        updatePreset(preset.id, { prompts: newPrompts, prompt_order: newOrder });
+        window.setTimeout(() => {
+            promptListRef.current
+                ?.querySelector(`[data-swipe-id="${CSS.escape(identifier)}"]`)
+                ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 80);
+    };
+
     const appendImportedPrompts = (preset: PresetConfig, raws: unknown[]) => {
         const base = Date.now();
         const sanitized = raws
@@ -1469,6 +1501,30 @@ export function PresetManager({ isActive = true }: { isActive?: boolean } = {}) 
                             >
                                 <Upload size={16} /> 从 JSON 文件导入
                             </button>
+                            {/* ── 系统注入点快捷添加：位置由 prompt_order 决定，添加后可拖动 ── */}
+                            <div className="ts-12 mt-2 mb-1 text-[var(--c-text)] opacity-70">记忆注入点（添加后可拖动调整位置）</div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button
+                                    type="button"
+                                    className="ui-btn ui-btn-outline w-full"
+                                    onClick={() => {
+                                        setAddEntryMenuOpen(false);
+                                        createMarkerEntryAtEnd(preset, "◇ 核心记忆", "memoryCore");
+                                    }}
+                                >
+                                    <Plus size={16} /> 核心记忆
+                                </button>
+                                <button
+                                    type="button"
+                                    className="ui-btn ui-btn-outline w-full"
+                                    onClick={() => {
+                                        setAddEntryMenuOpen(false);
+                                        createMarkerEntryAtEnd(preset, "◇ 长期记忆", "memoryLongTerm");
+                                    }}
+                                >
+                                    <Plus size={16} /> 长期记忆
+                                </button>
+                            </div>
                         </div>
                     </BottomSheet>
                 );
