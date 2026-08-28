@@ -58,7 +58,8 @@ export type MemoryConfig = {
     summarizationPrompt: string;            // user-editable prompt template for memory summarization
     coreMemoryPrompt: string;               // user-editable prompt template for core-memory extraction
     vnSummaryPrompt: string;                // user-editable prompt for VN chapter summarization
-    // ── Kiwi-style heat system ──
+    // ── Kiwi-style heat system（v3 遗留字段：字段保留供旧数据反序列化，
+    //    记忆宫殿 v3 不再读取；UI 已移除对应开关）──
     /**
      * 记忆引擎版本：
      * - "classic"：原版行为（向量相似度/时间排序，无热度参与，Dream 不执行）
