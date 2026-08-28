@@ -348,6 +348,11 @@ export async function runPalaceExtraction(
         console.warn("[PalaceEngine] 门牌/消化整理失败:", err);
     });
 
+    // ── 房间容量淘汰（活跃节点超容的房间按有效重要度归档最弱者）──
+    await enforceRoomCapacities(characterId).catch(err => {
+        console.warn("[PalaceEngine] 容量淘汰失败:", err);
+    });
+
     // ── 水位线 + 计数 ──
     setLastSummarizedTimestamp(characterId, latest);
     resetEventCounter(characterId);

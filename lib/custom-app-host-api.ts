@@ -41,8 +41,14 @@ import {
 import type { CalendarOwnerType, CalendarScheduleItem } from "./calendar-types";
 import { formatIsoDate, getWeekStartIso, normalizeTime } from "./calendar-utils";
 import { simpleLLMCall } from "./api-helpers";
-import { generateEmbedding } from "./memory-embedding";
-import { loadMemoryConfig, loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
+import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
+import { loadMemoryConfig, loadMemoryEntriesByType } from "./memory-storage";
+import { palaceNodeToEntry } from "./memory-service";
+import {
+    savePalaceNode,
+    loadPalaceNodes,
+} from "./palace-storage";
+import type { MemoryNode } from "./palace-types";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import type { MemoryEntry } from "./memory-types";
@@ -2124,9 +2130,7 @@ export async function readCustomAppLongTermMemory(record: Record<string, unknown
   const limit = Math.max(1, Math.min(200, Number(record.limit ?? 50) || 50));
   const entries = query
     ? await retrieveMemoriesForPrompt(characterId, query, loadMemoryConfig())
-    : (await loadMemoryEntriesByType(characterId, "long_term"))
-      .sort((a, b) => String(b.updatedAt ?? b.createdAt).localeCompare(String(a.updatedAt ?? a.createdAt)))
-      .slice(0, limit);
+    : await loadPalaceNodeEntries(characterId, limit);
   return {
     text: formatLongTermMemories(entries),
     entries: entries.map(serializeMemoryEntry),
@@ -2165,8 +2169,8 @@ export async function searchCustomAppMemory(record: Record<string, unknown>): Pr
   const query = cleanText(record.query, 300);
   if (!characterId || !query) throw new Error("memory.search 需要 characterId 和 query。");
   const [core, longTerm] = await Promise.all([
-    loadMemoryEntriesByType(characterId, "core"),
-    loadMemoryEntriesByType(characterId, "long_term"),
+    retrieveCoreMemoriesForPrompt(characterId, loadMemoryConfig()),
+    loadPalaceNodeEntries(characterId, 100),
   ]);
   const lower = query.toLowerCase();
   const limit = Math.max(1, Math.min(100, Number(record.limit ?? 30) || 30));
@@ -2183,23 +2187,40 @@ export async function addCustomAppMemory(app: InstalledCustomApp, record: Record
   if (!characterId || !content) throw new Error("memory.add 需要 characterId 和 content。");
   const now = new Date().toISOString();
   const importance = Math.max(0, Math.min(1, Number(record.importance ?? 0.6) || 0.6));
-  await saveMemoryEntry({
-    id: `custom_app_${app.id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  const nowMs = Date.now();
+  await savePalaceNode({
+    id: `custom_app_${app.id}_${nowMs.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
     characterId,
-    sourceApp: "chat",
-    type: record.type === "core" ? "core" : "long_term",
     content,
-    importance,
-    createdAt: now,
-    updatedAt: now,
-    metadata: {
-      origin: "custom_app",
-      appId: app.id,
-      appName: app.name,
-      reason: cleanText(record.reason, 300) || undefined,
-    },
+    room: record.type === "core" ? "user_room" : "living_room",
+    tags: [app.name].filter(Boolean),
+    entities: undefined,
+    importance: Math.round(importance * 10),
+    mood: undefined,
+    embedded: false,
+    embedding: undefined,
+    createdAt: nowMs,
+    lastAccessedAt: nowMs,
+    accessCount: 0,
+    pinnedUntil: null,
+    sourceId: null,
+    origin: "system",
+    digestedAt: null,
+    status: "active",
+    eventBoxId: null,
+    isBoxSummary: false,
   });
   return true;
+}
+
+/** 宫殿节点按新近读取（自定义 App 宿主 API 用，替代旧 v2 直读）。 */
+async function loadPalaceNodeEntries(characterId: string, limit: number): Promise<MemoryEntry[]> {
+  const nodes = await loadPalaceNodes(characterId);
+  return nodes
+    .filter(n => n.status === "active")
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, limit)
+    .map(palaceNodeToEntry);
 }
 
 export function addCustomAppTimelineEvent(app: InstalledCustomApp, record: Record<string, unknown>): Record<string, unknown> {

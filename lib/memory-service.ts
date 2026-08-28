@@ -28,7 +28,7 @@ export function isKiwiEngine(_config: MemoryConfig): boolean {
 }
 
 /** 宫殿节点 → 旧 MemoryEntry 适配（保真字段完整携带，业务格式化器零改动）。 */
-function nodeToEntry(node: MemoryNode): MemoryEntry {
+export function palaceNodeToEntry(node: MemoryNode): MemoryEntry {
     const createdIso = new Date(node.createdAt).toISOString();
     return {
         id: node.id,
@@ -76,7 +76,7 @@ export async function retrieveMemoriesForPrompt(
         topK: 40,
     });
     const expanded = await palaceSpreadActivation(seeded, characterId, 6);
-    const picked = fillByBudget(expanded.map(s => nodeToEntry(s.node)), budget);
+    const picked = fillByBudget(expanded.map(s => palaceNodeToEntry(s.node)), budget);
 
     if (picked.length > 0) {
         const touched = picked

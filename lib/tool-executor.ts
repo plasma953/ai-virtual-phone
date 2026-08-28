@@ -26,8 +26,10 @@ import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } f
 import { AGENT_COMPUTER_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { bridgeConnection, loadBridgeDataItems, loadBridgeShortcutActions, readAllBridgeStateSnapshots, readBridgeStateSnapshot } from "./reality-bridge/storage";
 import { createShortcutCommand, deliverShortcutCommand, waitForShortcutCommand } from "./shortcut-command-client";
-import { loadMemoryEntriesByType, saveMemoryEntry } from "./memory-storage";
-import type { MemoryEntry } from "./memory-types";
+import {
+    savePalaceNode,
+    loadPalaceNodes,
+} from "./palace-storage";
 import { loadCharacters } from "./character-storage";
 import {
     deleteCalendarScheduleItem,
@@ -3039,10 +3041,13 @@ function normalizeMemoryContent(text: string): string {
 }
 
 async function isDuplicateLongTermMemory(characterId: string, content: string): Promise<boolean> {
-    const entries = await loadMemoryEntriesByType(characterId, "long_term");
-    const recent = entries.slice(-20);
+    const nodes = await loadPalaceNodes(characterId);
+    const recent = nodes
+        .filter(n => n.status === "active")
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 20);
     const normalized = normalizeMemoryContent(content);
-    return recent.some(entry => normalizeMemoryContent(entry.content) === normalized);
+    return recent.some(node => normalizeMemoryContent(node.content) === normalized);
 }
 
 async function persistMemoryWriteRequest(
@@ -3061,25 +3066,29 @@ async function persistMemoryWriteRequest(
         };
     }
 
-    const now = new Date().toISOString();
-    const entry: MemoryEntry = {
-        id: `mem_lt_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    const nowMs = Date.now();
+    await savePalaceNode({
+        id: `mem_lt_manual_${nowMs}_${Math.random().toString(36).slice(2, 8)}`,
         characterId: request.characterId,
-        sourceApp: "chat",
-        type: "long_term",
         content: request.content,
-        importance: request.importance,
-        createdAt: now,
-        updatedAt: now,
-        metadata: {
-            origin: "ai_tool",
-            sessionId: request.sessionId,
-            ...(request.reason ? { reason: request.reason } : {}),
-            ...(options?.approvedByUser ? { approvedByUser: true } : {}),
-        },
-    };
-
-    await saveMemoryEntry(entry);
+        room: "user_room",
+        tags: [],
+        entities: undefined,
+        importance: Math.round(request.importance * 10) || 8,
+        mood: undefined,
+        embedded: false,
+        embedding: undefined,
+        createdAt: nowMs,
+        lastAccessedAt: nowMs,
+        accessCount: 0,
+        pinnedUntil: null,
+        sourceId: null,
+        origin: "system",
+        digestedAt: null,
+        status: "active",
+        eventBoxId: null,
+        isBoxSummary: false,
+    });
 
     return {
         name: "写入记忆",
