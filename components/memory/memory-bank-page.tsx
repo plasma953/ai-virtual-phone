@@ -25,10 +25,11 @@ import {
 } from "@/lib/memory-storage";
 import { hydrateChatStorage } from "@/lib/chat-storage";
 import { migrateLegacyMemories } from "@/lib/memory-migration";
+import { previewLegacySplit, applyLegacySplit, type SplitPreview } from "@/lib/memory-split";
 import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
 import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
-import { resolveAuxiliaryApiConfig, resolveUserIdentity } from "@/lib/settings-storage";
+import { resolveAuxiliaryApiConfig, resolveUserIdentity, loadApiConfigs, loadBindingConfig, saveBindingConfig } from "@/lib/settings-storage";
 import { generateEmbedding, resolveEmbeddingModel } from "@/lib/memory-embedding";
 import { BINDING_ACCENTS } from "@/lib/ui-accent-colors";
 
@@ -204,6 +205,11 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [editingCorePrompt, setEditingCorePrompt] = useState<string | null>(null);
     const [confirmDeleteEntryId, setConfirmDeleteEntryId] = useState<string | null>(null);
     const [confirmClearAll, setConfirmClearAll] = useState(false);
+    // ── 原子拆分预览（防失控）：预览态存于内存，应用后才落库 ──
+    const [splitPreview, setSplitPreview] = useState<SplitPreview | null>(null);
+    const [splitLoading, setSplitLoading] = useState(false);
+    const [splitError, setSplitError] = useState<string | null>(null);
+    const [splitSource, setSplitSource] = useState<MemoryEntry | null>(null);
     const [pickedCharId, setPickedCharId] = useState<string | null>(null);
     const [entryMenuId, setEntryMenuId] = useState<string | null>(null);
     const [memoryEditor, setMemoryEditor] = useState<MemoryEditorState | null>(null);
@@ -357,6 +363,56 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         loadCharacterList();
     };
 
+    // ── 原子拆分：预览 → （重新生成 | 应用）两段式，防失控 ──
+    const openSplitPreview = async (entry: MemoryEntry) => {
+        setEntryMenuId(null);
+        setSplitSource(entry);
+        setSplitPreview(null);
+        setSplitError(null);
+        setSplitLoading(true);
+        try {
+            const preview = await previewLegacySplit(entry);
+            if (!preview) {
+                setSplitError("拆分失败：未配置可用的记忆总结 API，或模型未返回有效拆分结果。可配置 API 后重试。");
+            } else {
+                setSplitPreview(preview);
+            }
+        } catch (err) {
+            setSplitError("拆分失败: " + String(err));
+        } finally {
+            setSplitLoading(false);
+        }
+    };
+
+    const regenerateSplit = async () => {
+        if (!splitSource || splitLoading) return;
+        setSplitPreview(null);
+        setSplitError(null);
+        setSplitLoading(true);
+        try {
+            const preview = await previewLegacySplit(splitSource);
+            if (!preview) {
+                setSplitError("重新生成失败：模型未返回有效拆分结果，请重试或调整记忆总结 API。");
+            } else {
+                setSplitPreview(preview);
+            }
+        } catch (err) {
+            setSplitError("重新生成失败: " + String(err));
+        } finally {
+            setSplitLoading(false);
+        }
+    };
+
+    const applySplit = async () => {
+        if (!splitPreview || !selectedCharId) return;
+        await applyLegacySplit(splitPreview);
+        setSplitPreview(null);
+        setSplitSource(null);
+        showNotice(`拆分已应用：${splitPreview.atoms.length} 条原子记忆入库，原文已归档（可复活回滚）`);
+        loadDetailData(selectedCharId);
+        loadCharacterList();
+    };
+
     const showNotice = (msg: string) => {
         onNotice?.(msg);
     };
@@ -441,13 +497,12 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             });
             if (stats.scanned === 0) {
                 showNotice("没有需要迁移的旧记忆（所有记忆都已在 Kiwi 热度系统中）");
-            } else if (stats.migrated + stats.splitEntries > 0) {
-                const parts = [`成功 ${stats.migrated + stats.splitEntries} 条`];
-                if (stats.splitEntries > 0) {
-                    parts.push(`拆分大块记忆 ${stats.splitEntries} 条 → 原子记忆 ${stats.splitProduced} 条（原文已归档，可复活回滚）`);
+            } else if (stats.migrated > 0 || stats.splitPending > 0) {
+                const parts = [`成功迁移 ${stats.migrated} 条`];
+                if (stats.splitPending > 0) {
+                    parts.push(`另有 ${stats.splitPending} 条大块记忆待人工拆分（在记忆银行点击对应卡片菜单的「拆分为原子记忆」，预览确认后才入库）`);
                 }
-                const failCount = stats.failed + stats.splitFailed;
-                if (failCount > 0) parts.push(`失败/回退 ${failCount} 条（可重试）`);
+                if (stats.failed > 0) parts.push(`失败 ${stats.failed} 条（可重试）`);
                 showNotice(`迁移完成：${parts.join("，")}`);
                 if (selectedCharId) loadDetailData(selectedCharId);
                 loadCharacterList();
@@ -682,6 +737,12 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                             <Edit3 size={13} />
                                             <span>编辑</span>
                                         </button>
+                                        {entry.content.length >= (config.splitThreshold ?? 250) && (
+                                            <button onClick={() => void openSplitPreview(entry)}>
+                                                <Sparkles size={13} />
+                                                <span>拆分为原子记忆</span>
+                                            </button>
+                                        )}
                                         <button
                                             className="is-danger"
                                             onClick={() => {
@@ -929,6 +990,57 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         onCancel={() => setConfirmClearAll(false)}
                     />
                 )}
+                {splitSource && (
+                    <div
+                        className="fixed inset-0 z-50 flex items-center justify-center"
+                        style={{ background: "rgba(0,0,0,0.55)", padding: 24 }}
+                        onClick={() => { if (!splitLoading) { setSplitSource(null); setSplitPreview(null); setSplitError(null); } }}
+                    >
+                        <div
+                            className="g-card"
+                            style={{ maxWidth: 560, width: "100%", maxHeight: "82vh", overflowY: "auto", padding: 16 }}
+                            onClick={e => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+                                <span className="ts-14" style={{ fontWeight: 600 }}>拆分预览 · 尚未入库</span>
+                                <span className="ts-11 text-secondary">原文 {splitSource.content.length} 字 · {splitSource.createdAt.slice(0, 10)}</span>
+                            </div>
+                            <div className="ts-11 text-secondary" style={{ padding: "6px 10px", borderRadius: 8, background: "rgba(120,120,150,0.10)", marginBottom: 10, maxHeight: 64, overflowY: "auto", lineHeight: 1.6 }}>
+                                {splitSource.content.slice(0, 200)}{splitSource.content.length > 200 ? "…" : ""}
+                            </div>
+                            {splitLoading && (
+                                <p className="ts-12 text-center" style={{ padding: "20px 0" }}>正在调用记忆总结 API 拆分…</p>
+                            )}
+                            {!splitLoading && splitError && (
+                                <div>
+                                    <p className="ts-12" style={{ padding: "10px 12px", borderRadius: 8, background: "rgba(199,110,110,0.12)", color: "#c98a8a", lineHeight: 1.6 }}>{splitError}</p>
+                                    <div className="flex justify-end" style={{ marginTop: 10 }}>
+                                        <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" onClick={() => void openSplitPreview(splitSource)}>重试</button>
+                                    </div>
+                                </div>
+                            )}
+                            {!splitLoading && !splitError && splitPreview && (
+                                <>
+                                    <p className="ts-11 text-secondary" style={{ marginBottom: 8 }}>共 {splitPreview.atoms.length} 条原子记忆，每条已附逐字引用证据（机械校验通过）：</p>
+                                    {splitPreview.atoms.map((atom, i) => (
+                                        <div key={i} style={{ padding: "8px 10px", borderRadius: 10, background: "rgba(139,123,184,0.10)", marginBottom: 8 }}>
+                                            <div className="ts-12 leading-[1.7]">{atom.content}</div>
+                                            <div className="ts-11" style={{ marginTop: 5, color: "#b9a8dc" }}>📎 {atom.quote}</div>
+                                            <div className="ts-10 text-secondary" style={{ marginTop: 3 }}>
+                                                重要度 {Math.round(atom.importance * 100)}%{atom.embedding ? " · 已生成向量" : " · 无向量（召回链路兜底）"}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <div className="flex justify-end" style={{ gap: 8, marginTop: 12 }}>
+                                        <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" onClick={() => { setSplitSource(null); setSplitPreview(null); }}>关闭</button>
+                                        <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" disabled={splitLoading} onClick={() => void regenerateSplit()}>🔄 重新生成</button>
+                                        <button className="ui-btn ui-btn-primary py-1 px-3 ts-12" onClick={() => void applySplit()}>✓ 应用拆分（{splitPreview.atoms.length} 条）</button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }
@@ -1142,6 +1254,78 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     </div>
                 </div>
 
+                {/* ── Memory API bindings（AIVP 记忆专用 API）── */}
+                <p className="menu-group-desc mx-2">记忆 API（AIVP 辅助绑定）</p>
+                <div className="menu-group">
+                    {(() => {
+                        const apiList = loadApiConfigs();
+                        const binding = loadBindingConfig();
+                        const summaryId = binding.memorySummaryApiConfigId;
+                        const embedId = binding.embeddingApiConfigId;
+                        const summaryCfg = apiList.find(c => c.id === summaryId) ?? null;
+                        const embedCfg = apiList.find(c => c.id === embedId) ?? null;
+                        const globalCfg = apiList.find(c => c.id === binding.globalDefaults?.apiConfigId) ?? null;
+                        const summaryEffective = summaryCfg ?? globalCfg;
+                        const embedEffective = embedCfg ?? globalCfg;
+                        const setAuxBinding = (field: "memorySummaryApiConfigId" | "embeddingApiConfigId", id: string) => {
+                            const next = { ...loadBindingConfig(), [field]: id || undefined } as Parameters<typeof saveBindingConfig>[0];
+                            saveBindingConfig(next);
+                            updateConfig({}); // 触发重渲染
+                        };
+                        return (
+                            <>
+                                <div className="menu-item">
+                                    <MemorySettingsIcon icon={Brain} color={BINDING_ACCENTS.memory} />
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">记忆总结 API</span>
+                                        <span className="menu-desc">
+                                            {summaryEffective
+                                                ? `当前：${summaryEffective.name || summaryEffective.defaultModel || "未命名配置"}${summaryCfg ? "" : "（回退全局默认）"}`
+                                                : "未配置：请到「绑定管理」设置记忆总结专用 API"}
+                                        </span>
+                                    </div>
+                                    <div className="menu-right">
+                                        <select
+                                            className="ui-select"
+                                            style={{ maxWidth: 130 }}
+                                            value={summaryId ?? ""}
+                                            onChange={e => setAuxBinding("memorySummaryApiConfigId", e.target.value)}
+                                        >
+                                            <option value="">跟随全局默认</option>
+                                            {apiList.map(c => (
+                                                <option key={c.id} value={c.id}>{c.name || c.defaultModel || c.id}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="menu-item">
+                                    <MemorySettingsIcon icon={Search} color={BINDING_ACCENTS.memory} />
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">向量 API</span>
+                                        <span className="menu-desc">
+                                            {embedEffective
+                                                ? `当前：${embedEffective.name || embedEffective.defaultModel || "未命名配置"}${embedCfg ? "" : "（回退全局默认）"}`
+                                                : "未配置：请到「绑定管理」设置向量 API"}
+                                        </span>
+                                    </div>
+                                    <div className="menu-right">
+                                        <select
+                                            className="ui-select"
+                                            style={{ maxWidth: 130 }}
+                                            value={embedId ?? ""}
+                                            onChange={e => setAuxBinding("embeddingApiConfigId", e.target.value)}
+                                        >
+                                            <option value="">跟随全局默认</option>
+                                            {apiList.map(c => (
+                                                <option key={c.id} value={c.id}>{c.name || c.defaultModel || c.id}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+                            </>
+                        );
+                    })()}
+                </div>
                 {/* ── Kiwi heat engine ── */}
                 <p className="menu-group-desc mx-2">记忆热度引擎{config.memoryEngineVersion === "classic" ? "（当前为原版引擎，以下设置不生效）" : ""}</p>
                 <div className="menu-group">
@@ -1151,8 +1335,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             <span className="menu-label">旧记忆迁移到 Kiwi</span>
                             <span className="menu-desc">
                                 {migratingLegacy && migrationProgress
-                                    ? `正在迁移 ${migrationProgress.done}/${migrationProgress.total}（大块原子拆分 + 小块评分，含引用校验）…`
-                                    : "大块旧记忆会被 LLM 智能拆分成原子化记忆（只拆不编，逐字引用锚定，原文归档可回滚）；小块记忆补齐标签融入热度系统"}
+                                    ? `正在迁移 ${migrationProgress.done}/${migrationProgress.total}（小块评分，含实体标签）…`
+                                    : "小块记忆自动补齐标签融入热度系统；大块记忆需在长期记忆列表手动「拆分为原子记忆」（预览确认后入库）"}
                             </span>
                         </div>
                         <div className="menu-right">
@@ -1190,6 +1374,17 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             }} />
                         </div>
                     </div>
+                    <MemorySettingsSliderItem
+                        icon={Sparkles}
+                        color={BINDING_ACCENTS.memory}
+                        label="拆分流阈值"
+                        desc={`超过该字数的旧大块记忆进入「原子拆分预览」（当前阈值约 ${Math.round((config.splitThreshold ?? 250) / 2)}~${config.splitThreshold ?? 250} 字）`}
+                        value={config.splitThreshold ?? 250}
+                        min={100}
+                        max={2000}
+                        step={50}
+                        onChange={(value) => updateConfig({ splitThreshold: value })}
+                    />
                     <MemorySettingsSliderItem
                         icon={Flame}
                         color={BINDING_ACCENTS.memory}

@@ -76,6 +76,8 @@ export type MemoryConfig = {
     heatWeightInRanking: number;
     /** 矛盾自动失效：新记忆与旧记忆高置信度矛盾时，旧条目标 superseded（退出排名、可复活） */
     conflictDetectionEnabled: boolean;
+    /** 旧记忆迁移的拆分流阈值（字符）：大块旧记忆超过该长度时进入原子化拆分预览 */
+    splitThreshold: number;
     // ── Kiwi-style Dream consolidation ──
     /** Dream 整合开关：定期把低热度碎片记忆压缩提炼成高浓度记忆 */
     dreamEnabled: boolean;
@@ -201,6 +203,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     heatHalfLifeDays: 7,
     heatWeightInRanking: 0.35,
     conflictDetectionEnabled: true,
+    splitThreshold: 250,
     dreamEnabled: true,
     dreamIntervalDays: 3,
     dreamColdHeatThreshold: 0.3,
