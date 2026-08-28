@@ -8,7 +8,7 @@ import { loadMemoryConfig } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { simpleLLMCall } from "./api-helpers";
 import { generateEmbedding, resolveEmbeddingModel } from "./memory-embedding";
-import { extractQuoteBlocks, verifyQuoteAgainstSource } from "./memory-quote";
+import { extractQuoteBlocks, verifyQuoteAgainstSource, normalizeForMatch } from "./memory-quote";
 import { DEFAULT_INITIAL_HEAT } from "./memory-heat";
 
 /** 拆分产物单条正文长度上限（截断防失控输出撑爆预算） */
@@ -30,6 +30,17 @@ export type SplitPreview = {
     atoms: SplitPreviewAtom[];
 };
 
+/**
+ * 拆分场景的引用校验：沿用逐字机械校验；超短原文（规范化后 < 6 字）时，
+ * 引用等于整条原文即视为有效——保证「任何记忆都能拆」，不因长度下限误杀。
+ */
+function verifySplitQuote(quote: string, sourceText: string): boolean {
+    if (verifyQuoteAgainstSource(quote, sourceText)) return true;
+    const s = normalizeForMatch(sourceText);
+    if (s.length < 6) return normalizeForMatch(quote) === s;
+    return false;
+}
+
 /** 拆分 LLM 调用与解析（内部共享：首生成与重新生成走同一逻辑） */
 async function callSplitLLM(
     sourceText: string,
@@ -39,18 +50,19 @@ async function callSplitLLM(
     if (!apiConfig?.apiKey) return null;
 
     const prompt = [
-        `你是记忆档案整理员。下面是一条旧记忆系统生成的「大块混合总结」，它把多件事压在了一起。`,
+        `你是记忆档案整理员。下面是一条记忆，它可能只包含一件事，也可能把多件事混在一起。`,
         `你的任务：把它拆分成一条条「原子化记忆」，每条只讲一件事，方便后续按相关性和热度独立检索。`,
+        `如果它本来就只有一件事，输出 1 条即可；不要为了多拆而强行切割。`,
         "",
-        `【大块记忆原文】`,
+        `【记忆原文】`,
         sourceText,
         "",
         `【拆分规则（必须遵守）】`,
         `- 只拆分和重述原文中已有的事实，绝对禁止新增、推断或编造原文没有的信息`,
-        `- 每条原子记忆：一个独立事实/事件/约定/偏好/情感节点，20-80 字，第三人称，陈述句`,
+        `- 每条原子记忆：一个独立事实/事件/约定/偏好/情感节点，不超过 80 字，第三人称，陈述句`,
         `- 合并原文中的重复表述；时间线混乱的事实按语义归位`,
-        `- 每条原子记忆必须附「逐字引用」：从上方原文中一字不差复制的 10-40 字片段，`,
-        `  作为这条事实的证据（JSON 行内的 quote 字段）`,
+        `- 每条原子记忆必须附「逐字引用」：从上方原文中一字不差复制的片段（10-40 字；`,
+        `  原文不足 10 字时直接整条复制），作为这条事实的证据（JSON 行内的 quote 字段）`,
         `- 宁可少拆，绝不编造；拆不出来的一条都不要输出`,
         "",
         `只返回 JSON，不要任何解释，格式：`,
@@ -83,11 +95,11 @@ async function callSplitLLM(
             if (!rawContent) continue;
             let quote = typeof item.quote === "string" ? item.quote.trim() : "";
             // 保真层机械校验：引用必须逐字存在于源原文；兼容 LLM 把引用写进 content 的情况
-            if (!quote || !verifyQuoteAgainstSource(quote, sourceText)) {
+            if (!quote || !verifySplitQuote(quote, sourceText)) {
                 const embedded = extractQuoteBlocks(rawContent);
-                quote = embedded.quotes.find(q => verifyQuoteAgainstSource(q, sourceText)) ?? "";
+                quote = embedded.quotes.find(q => verifySplitQuote(q, sourceText)) ?? "";
             }
-            if (!quote || !verifyQuoteAgainstSource(quote, sourceText)) {
+            if (!quote || !verifySplitQuote(quote, sourceText)) {
                 // 找不到逐字证据 → 视为不可靠，丢弃该条（宁可少，不可编）
                 continue;
             }
@@ -151,7 +163,8 @@ async function saveAtomEntry(source: MemoryEntry, atom: SplitPreviewAtom, now: s
         id: `mem_lt_split_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         characterId: source.characterId,
         sourceApp: source.sourceApp,
-        type: "long_term",
+        // 继承源类型：长期记忆拆出长期记忆，核心记忆拆出核心记忆（不降级）
+        type: source.type,
         content: atom.content,
         importance: atom.importance,
         createdAt: source.createdAt,

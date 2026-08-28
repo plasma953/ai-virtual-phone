@@ -11,7 +11,6 @@ import {
     heatColor,
     type ConstellationNode,
 } from "@/lib/memory-visualize";
-import { DEFAULT_SPLIT_THRESHOLD } from "@/lib/memory-migration";
 import { X, Sparkles, Scissors } from "lucide-react";
 
 const VIEW = 360;                 // SVG viewBox 尺寸
@@ -255,31 +254,29 @@ export function MemoryConstellation({
                                     </>
                                 )}
                             </div>
-                            {/* ── 星图内拆分：大块记忆直接在星图里原子化 ── */}
-                            {onSplitEntry
-                                && selected.kind === "long_term"
-                                && selected.content.length >= (config.splitThreshold ?? DEFAULT_SPLIT_THRESHOLD) && (
-                                    <button
-                                        className="ui-btn ui-btn-outline"
-                                        style={{
-                                            marginTop: 10,
-                                            display: "flex",
-                                            alignItems: "center",
-                                            justifyContent: "center",
-                                            gap: 6,
-                                            padding: "8px 12px",
-                                            borderRadius: 12,
-                                        }}
-                                        onClick={() => {
-                                            const entry = entries.find(e => e.id === selected.id);
-                                            setSelected(null);
-                                            if (entry) onSplitEntry(entry);
-                                        }}
-                                    >
-                                        <Scissors size={14} />
-                                        拆分此记忆（{selected.content.length} 字大块）
-                                    </button>
-                                )}
+                            {/* ── 星图内拆分：任何记忆点开即可原子化（无字数门槛） ── */}
+                            {onSplitEntry && (
+                                <button
+                                    className="ui-btn ui-btn-outline"
+                                    style={{
+                                        marginTop: 10,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        gap: 6,
+                                        padding: "8px 12px",
+                                        borderRadius: 12,
+                                    }}
+                                    onClick={() => {
+                                        const entry = entries.find(e => e.id === selected.id);
+                                        setSelected(null);
+                                        if (entry) onSplitEntry(entry);
+                                    }}
+                                >
+                                    <Scissors size={14} />
+                                    拆分此记忆
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
