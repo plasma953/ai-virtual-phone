@@ -3,6 +3,7 @@
 // 微信云同步 toast：weixin-cloud-sync 广播的同步事件在这里可视化，过程常驻式——
 // 「…中」的 sticky 条从动手挂到结束，结束时同 id 原地替换成结果（自动消隐），
 // 没事可干则无声撤下（text 为 null）。挂在桌面壳根部，停在哪个 App 都看得见。
+// 挂在顶部（状态栏下方）：常驻条放底部会挡住聊天输入栏。
 
 import { useEffect, useRef, useState } from "react";
 import { WEIXIN_SYNC_TOAST_EVENT } from "@/lib/weixin-cloud-sync";
@@ -58,7 +59,7 @@ export function WeixinSyncToast() {
             style={{
                 position: "fixed",
                 left: "50%",
-                bottom: 28,
+                top: "calc(env(safe-area-inset-top, 0px) + 44px)",
                 transform: "translateX(-50%)",
                 zIndex: 3000,
                 display: "flex",

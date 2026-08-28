@@ -1726,7 +1726,7 @@ export function RealityBridgeApp({ onClose, onNotice }: {
                       onChange={event => setEditingShortcut({ ...editingShortcut, resultMode: event.target.value as BridgeShortcutAction["resultMode"] })}>
                       <option value="none">发出后立即返回，不等待结果</option>
                       <option value="text">等待快捷指令回传文本</option>
-                      <option value="image">等待快捷指令上传图片</option>
+                      <option value="image">等待快捷指令上传图片（可附文字）</option>
                     </select>
                   </label>
                   {editingShortcut.resultMode !== "none" ? (
@@ -1782,7 +1782,7 @@ export function RealityBridgeApp({ onClose, onNotice }: {
                         <i>{resultNo}</i>
                         <div className="rb-substep-body">
                           {editingShortcut.resultMode === "image" ? (
-                            <p><b>回传图片</b>：{hasParams ? null : <>先添加「获取文本」（输入选「快捷指令输入」），</>}用「获取字典值」取上传地址：字典选「文本」，键名填 <button type="button" className="rb-copychip" onClick={() => copy("resultUrl", "键名")}>resultUrl</button>；再用「获取 URL 内容」POST 到该变量，请求体选「文件」，文件选截图（≤8MB）。</p>
+                            <p><b>回传图片</b>：{hasParams ? null : <>先添加「获取文本」（输入选「快捷指令输入」），</>}用「获取字典值」取上传地址：字典选「文本」，键名填 <button type="button" className="rb-copychip" onClick={() => copy("resultUrl", "键名")}>resultUrl</button>；再用「获取 URL 内容」POST 到该变量。只传图：请求体选「文件」，文件选图片（≤8MB）。图+附文字（如截屏配 OCR 屏幕文字）：先对图片用「Base64 编码」，请求体选 JSON，加文本字段 <button type="button" className="rb-copychip" onClick={() => copy("image", "键名")}>image</button>（填编码结果）和 <button type="button" className="rb-copychip" onClick={() => copy("ocr", "键名")}>ocr</button>（填附带文字），文字会和图一起交给角色。</p>
                           ) : (
                             <p><b>回传文本</b>：{hasParams ? null : <>先添加「获取文本」（输入选「快捷指令输入」），</>}用「获取字典值」取上传地址：字典选「文本」，键名填 <button type="button" className="rb-copychip" onClick={() => copy("resultUrl", "键名")}>resultUrl</button>；再用「获取 URL 内容」POST 到该变量，请求体选 JSON，加文本字段 text 填结果。</p>
                           )}

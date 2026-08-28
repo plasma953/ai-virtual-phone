@@ -216,13 +216,27 @@ export async function consumeServerOutbox(options?: { silent?: boolean; force?: 
                         text = applyOutputRegex(text, regexes, { macroEngine, activeTags });
                     }
 
+                    // 云端执行过的快捷动作标记：在原始位置落一对 tool_call/tool_notice——
+                    // 上下文里保留标记原文，UI 显示与小手机内直接调用一致
+                    const rawMarker = (meta as { shortcutMarker?: { text?: unknown; insertAt?: unknown; name?: unknown } }).shortcutMarker;
+                    const shortcutMarker = rawMarker
+                        && typeof rawMarker.text === "string" && rawMarker.text
+                        && typeof rawMarker.name === "string" && rawMarker.name
+                        ? {
+                            text: rawMarker.text,
+                            insertAt: typeof rawMarker.insertAt === "number" && Number.isFinite(rawMarker.insertAt)
+                                ? rawMarker.insertAt
+                                : Number.MAX_SAFE_INTEGER,
+                            name: rawMarker.name,
+                        }
+                        : undefined;
                     const { hasVisible, newCount, stateValues } = await parseAndSaveResponse(
                         text,
                         sessionId,
                         meta.prevCount ?? 0,
                         followUpIndex,
                         existingMessages,
-                        { silent: options?.silent !== false },
+                        { silent: options?.silent !== false, ...(shortcutMarker ? { shortcutMarker } : {}) },
                     );
                     if (hasVisible && newCount < 10) scheduleFollowUp(sessionId, newCount, stateValues);
                     clearTimedWakeIfHandled(entry.trigger_key);

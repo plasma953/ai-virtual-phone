@@ -510,7 +510,7 @@ Deno.serve(async (req: Request) => {
       action: Record<string, unknown>,
       deferDelivery = false,
       args: Record<string, unknown> = {},
-    ): Promise<{ ok: boolean; note: string; commandId: string }> => {
+    ): Promise<{ ok: boolean; note: string; commandId: string; resultUrl: string }> => {
       const actionName = String(action.name ?? "");
       try {
         const createResponse = await fetch(`${supabaseUrl}/functions/v1/ai-phone-push?action=shortcut-create`, {
@@ -526,6 +526,9 @@ Deno.serve(async (req: Request) => {
             shortcutName: String(action.shortcutName ?? ""),
             arguments: args,
             resultMode: String(action.resultMode ?? "none"),
+            // 此前漏传 deliveryMode，网关一律按 push 建行：配了「邮件自动执行」的
+            // 动作走现实桥也会退化成要点按的通知
+            deliveryMode: String(action.deliveryMode ?? "push") === "email" ? "email" : "push",
             expiresInSeconds: Number(action.expiresInSeconds) || undefined,
             deferDelivery,
           }),
@@ -535,11 +538,13 @@ Deno.serve(async (req: Request) => {
           delivered?: boolean;
           error?: string;
           command?: { id?: string };
+          resultUrl?: string;
         };
         const ok = createResponse.ok && createResult.ok === true;
         return {
           ok,
           commandId: ok ? String(createResult.command?.id || "") : "",
+          resultUrl: ok ? String(createResult.resultUrl || "") : "",
           note: ok
             ? (deferDelivery
               ? `快捷动作「${actionName}」已创建，等待首条回复送达`
@@ -549,7 +554,44 @@ Deno.serve(async (req: Request) => {
             : `快捷动作「${actionName}」发送失败：${(createResult.error || `HTTP ${createResponse.status}`).slice(0, 80)}`,
         };
       } catch (err) {
-        return { ok: false, commandId: "", note: `快捷动作「${actionName}」发送失败：${(err instanceof Error ? err.message : String(err)).slice(0, 80)}` };
+        return { ok: false, commandId: "", resultUrl: "", note: `快捷动作「${actionName}」发送失败：${(err instanceof Error ? err.message : String(err)).slice(0, 80)}` };
+      }
+    };
+    /** 邮件模式的触发信请站点凭 site_bridge_token 代发：个人云没有发信服务，
+     *  网关对邮件命令也只建行不投递（与 push-generate 的同名逻辑一致）。 */
+    const deliverBridgeShortcutEmailViaSite = async (
+      userId: string,
+      input: { commandId: string; resultUrl: string; actionId: string; actionName: string; args: Record<string, unknown> },
+    ): Promise<{ ok: boolean; note: string }> => {
+      if (!siteOrigin) return { ok: false, note: "邮件代发失败：站点地址未知" };
+      if (!input.commandId || !input.resultUrl) return { ok: false, note: "邮件代发失败：命令信息不完整" };
+      try {
+        const tokenResponse = await rest(
+          `push_bridge_config?user_id=eq.${encodeURIComponent(userId)}&select=site_bridge_token&limit=1`,
+        );
+        const tokenRows = tokenResponse.ok
+          ? await tokenResponse.json() as { site_bridge_token?: string | null }[]
+          : [];
+        const siteBridgeToken = String(tokenRows[0]?.site_bridge_token || "");
+        if (!siteBridgeToken) return { ok: false, note: "站点代发未启用：请到「设置 → 云服务部署」重新部署个人云" };
+        const response = await fetch(`${siteOrigin}/api/push/shortcut-commands/deliver-email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: siteBridgeToken,
+            actionId: input.actionId,
+            actionName: input.actionName,
+            commandId: input.commandId,
+            resultUrl: input.resultUrl,
+            arguments: input.args,
+          }),
+        });
+        const data = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
+        return response.ok && data.ok === true
+          ? { ok: true, note: "触发邮件已由站点代发" }
+          : { ok: false, note: `邮件代发失败：${String(data.error || response.status).slice(0, 80)}` };
+      } catch (error) {
+        return { ok: false, note: `邮件代发失败：${(error instanceof Error ? error.message : String(error)).slice(0, 80)}` };
       }
     };
     const deliverShortcutCommand = async (
@@ -711,7 +753,19 @@ Deno.serve(async (req: Request) => {
         // 整条链都在用户自己的 Supabase 里。
         let shortcutNote = "";
         if (rule.shortcut?.shortcutName) {
-          shortcutNote = (await sendShortcutCreate(rule.shortcut as unknown as Record<string, unknown>)).note;
+          const directAction = rule.shortcut as unknown as Record<string, unknown>;
+          const directCreated = await sendShortcutCreate(directAction);
+          shortcutNote = directCreated.note;
+          if (directCreated.ok && String(directAction.deliveryMode ?? "push") === "email") {
+            const emailDelivered = await deliverBridgeShortcutEmailViaSite(job.user_id, {
+              commandId: directCreated.commandId,
+              resultUrl: directCreated.resultUrl,
+              actionId: String(directAction.actionId ?? ""),
+              actionName: String(directAction.name ?? ""),
+              args: {},
+            });
+            shortcutNote = `${shortcutNote}；${emailDelivered.note}`;
+          }
         }
 
         let replyRaw = "";
@@ -742,22 +796,42 @@ Deno.serve(async (req: Request) => {
         //（参数允许换行）——老正则会把括号连参数当成动作名，目录匹配必然落空。
         let deferredAiShortcutCommandId = "";
         let deferredAiShortcutName = "";
+        let deferredAiShortcutEmail: { commandId: string; resultUrl: string; actionId: string; actionName: string; args: Record<string, unknown> } | null = null;
+        // 实际执行过的快捷动作标记（原文+在剥离后正文中的位置）：随 outbox 带回
+        // 小手机，在原始位置落一对 tool_call/tool_notice——上下文里是标记原文，
+        // 角色下一轮才知道自己传过什么参数（否则「换一首歌」会换出同一首）
+        let executedShortcutMarker: { text: string; insertAt: number; name: string } | null = null;
         if (replyRaw) {
           const markerMatch = replyRaw.match(/【快捷动作[：:]\s*([^(（）)】\n]{1,60}?)\s*(?:[(（]([\s\S]{0,2000}?)[)）])?\s*】/);
           if (markerMatch) {
+            const markerStripRe = /【快捷动作[：:]\s*[^(（）)】\n]{1,60}?\s*(?:[(（][\s\S]{0,2000}?[)）])?\s*】/g;
+            const markerText = markerMatch[0];
+            // 标记在剥离后正文中的原始位置：对前缀做同一套清洗后取长度（尾部 trim 不影响前缀）
+            const cleanedPrefix = replyRaw.slice(0, markerMatch.index ?? 0)
+              .replace(markerStripRe, "")
+              .replace(/\n{3,}/g, "\n\n")
+              .replace(/^\s+/, "");
             replyRaw = replyRaw
-              .replace(/【快捷动作[：:]\s*[^(（）)】\n]{1,60}?\s*(?:[(（][\s\S]{0,2000}?[)）])?\s*】/g, "")
+              .replace(markerStripRe, "")
               .replace(/\n{3,}/g, "\n\n").trim();
             if (!replyRaw) replyRaw = "……";
+            const markerInsertAt = Math.min(cleanedPrefix.length, replyRaw.length);
             const wanted = markerMatch[1].trim();
-            // 括号里的 JSON 参数写坏了就当没带——宁可少传，也不要整条动作失败
+            // 括号里的 JSON 参数写坏了就当没带——宁可少传，也不要整条动作失败。
+            // 模型爱用全角标点（中文引号/冒号/逗号），原文解析失败就按归一化后的再试一次。
             let wantedArgs: Record<string, unknown> = {};
             const rawArgs = (markerMatch[2] ?? "").trim();
             if (rawArgs) {
-              try {
-                const parsed = JSON.parse(rawArgs) as unknown;
-                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) wantedArgs = parsed as Record<string, unknown>;
-              } catch { /* ignore */ }
+              const candidates = [rawArgs, rawArgs.replace(/[\u201c\u201d\u201e\u201f]/g, '"').replace(/\uff1a/g, ":").replace(/\uff0c/g, ",")];
+              for (const candidate of candidates) {
+                try {
+                  const parsed = JSON.parse(candidate) as unknown;
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) { wantedArgs = parsed as Record<string, unknown>; break; }
+                } catch { /* try next */ }
+              }
+              if (Object.keys(wantedArgs).length === 0) {
+                console.warn(`[push-bridge] 快捷动作参数解析失败 raw=${rawArgs.slice(0, 200)}`);
+              }
             }
             const catalogAction = shortcutCatalog.find(entry => String(entry.name ?? "") === wanted);
             let aiNote = `快捷动作「${wanted}」不存在或未启用`;
@@ -771,6 +845,21 @@ Deno.serve(async (req: Request) => {
                 && Boolean(continuation?.request && continuation.replyMarker && continuation.resultMarker);
               const created = await sendShortcutCreate(catalogAction, canContinue, wantedArgs);
               aiNote = created.note;
+              const wantedDeliveryMode = String(catalogAction.deliveryMode ?? "push") === "email" ? "email" : "push";
+              if (created.ok && created.commandId) {
+                executedShortcutMarker = { text: markerText, insertAt: markerInsertAt, name: wanted };
+              }
+              // 邮件模式且不挂续跑：立刻请站点代发触发信（网关只建行不发信）
+              if (created.ok && created.commandId && wantedDeliveryMode === "email" && !(canContinue && continuation)) {
+                const emailDelivered = await deliverBridgeShortcutEmailViaSite(job.user_id, {
+                  commandId: created.commandId,
+                  resultUrl: created.resultUrl,
+                  actionId: String(catalogAction.actionId ?? ""),
+                  actionName: String(catalogAction.name ?? wanted),
+                  args: wantedArgs,
+                });
+                aiNote += `，${emailDelivered.note}`;
+              }
               if (created.ok && created.commandId && canContinue && continuation) {
                 try {
                   let contBodyJson = JSON.stringify(continuation.request.body);
@@ -828,8 +917,12 @@ Deno.serve(async (req: Request) => {
                   });
                   await armed.text().catch(() => "");
                   if (armed.ok) {
-                    deferredAiShortcutCommandId = created.commandId;
-                    deferredAiShortcutName = String(catalogAction.name ?? wanted);
+                    if (wantedDeliveryMode === "email") {
+                      deferredAiShortcutEmail = { commandId: created.commandId, resultUrl: created.resultUrl, actionId: String(catalogAction.actionId ?? ""), actionName: String(catalogAction.name ?? wanted), args: wantedArgs };
+                    } else {
+                      deferredAiShortcutCommandId = created.commandId;
+                      deferredAiShortcutName = String(catalogAction.name ?? wanted);
+                    }
                     aiNote += "，已挂结果续跑";
                   } else {
                     aiNote += "，结果续跑挂载失败";
@@ -852,6 +945,10 @@ Deno.serve(async (req: Request) => {
           if (markerAt >= 0) {
             replyRaw = (replyRaw.slice(0, markerAt) + replyRaw.slice(markerAt + WEIXIN_MARKER.length)).trim();
             if (!replyRaw) replyRaw = "……";
+            // 微信标记被剥掉后，快捷动作标记的还原位置要跟着前移（消费端还会钳位兜底）
+            if (executedShortcutMarker && markerAt < executedShortcutMarker.insertAt) {
+              executedShortcutMarker.insertAt = Math.max(0, executedShortcutMarker.insertAt - WEIXIN_MARKER.length);
+            }
             const snapshot = await loadSnapshot(rule.id);
             const weixinBotId = typeof snapshot?.weixin?.botId === "string" ? snapshot.weixin.botId : "";
             if (weixinBotId) {
@@ -881,6 +978,7 @@ Deno.serve(async (req: Request) => {
           chat: rule.chat ?? null,
           deferredActions: rule.deferredActions ?? [],
           ...(shortcutNote ? { shortcutNote } : {}),
+          ...(executedShortcutMarker ? { shortcutMarker: executedShortcutMarker } : {}),
           capped,
           reply: replyRaw ? (await loadSnapshot(rule.id))?.reply ?? null : null,
         };
@@ -909,8 +1007,10 @@ Deno.serve(async (req: Request) => {
           }
         }
 
-        if (stored.ok && deferredAiShortcutCommandId) {
-          const delivered = await deliverShortcutCommand(deferredAiShortcutCommandId, deferredAiShortcutName);
+        if (stored.ok && (deferredAiShortcutCommandId || deferredAiShortcutEmail)) {
+          const delivered = deferredAiShortcutEmail
+            ? await deliverBridgeShortcutEmailViaSite(job.user_id, deferredAiShortcutEmail)
+            : await deliverShortcutCommand(deferredAiShortcutCommandId, deferredAiShortcutName);
           shortcutNote = shortcutNote ? `${shortcutNote}；${delivered.note}` : delivered.note;
           outboxMeta.shortcutNote = shortcutNote;
           await rest(`push_outbox?id=eq.${encodeURIComponent(outboxId)}`, {

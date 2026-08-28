@@ -152,6 +152,7 @@ type PromptBlock = {
     toolName?: string;
 };
 
+
 function resolveHistoryPromptRole(msg: ChatMessage): Exclude<LLMMessageRole, "tool"> {
     // appHistoryRole：显示身份与记忆身份分离（自定义APP卡片与现实桥文本消息都在用）
     const appHistoryRole = msg.mediaData?.appHistoryRole;
