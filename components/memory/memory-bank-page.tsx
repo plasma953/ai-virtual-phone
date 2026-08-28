@@ -23,6 +23,7 @@ import {
     getLastCoreSummarizedTimestamp,
 } from "@/lib/memory-storage";
 import { hydrateChatStorage } from "@/lib/chat-storage";
+import { migrateLegacyMemories } from "@/lib/memory-migration";
 import { loadNativeTimeline, type NativeTimelineEntry } from "@/lib/short-term-assembler";
 import { runSummarizationPipeline } from "@/lib/memory-summarizer";
 import { runCoreMemoryPipeline } from "@/lib/core-memory-builder";
@@ -196,6 +197,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [loading, setLoading] = useState(false);
     const [summarizing, setSummarizing] = useState(false);
     const [rebuildingCore, setRebuildingCore] = useState(false);
+    const [migratingLegacy, setMigratingLegacy] = useState(false);
+    const [migrationProgress, setMigrationProgress] = useState<{ done: number; total: number } | null>(null);
     const [editingPrompt, setEditingPrompt] = useState<string | null>(null);
     const [editingCorePrompt, setEditingCorePrompt] = useState<string | null>(null);
     const [confirmDeleteEntryId, setConfirmDeleteEntryId] = useState<string | null>(null);
@@ -408,7 +411,32 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             setRebuildingCore(false);
         }
     };
-
+    /** 旧记忆 → Kiwi 热度系统迁移：LLM 补齐重要度+实体标签并重置热度（带进度与统计） */
+    const handleMigrateLegacyMemories = async () => {
+        if (migratingLegacy) return;
+        setMigratingLegacy(true);
+        setMigrationProgress(null);
+        try {
+            const stats = await migrateLegacyMemories({
+                onProgress: (done, total) => setMigrationProgress({ done, total }),
+            });
+            if (stats.scanned === 0) {
+                showNotice("没有需要迁移的旧记忆（所有记忆都已在 Kiwi 热度系统中）");
+            } else if (stats.migrated > 0) {
+                showNotice(`迁移完成：成功 ${stats.migrated} 条${stats.failed ? `，失败 ${stats.failed} 条（可重试）` : ""}`);
+                if (selectedCharId) loadDetailData(selectedCharId);
+                loadCharacterList();
+            } else {
+                showNotice("迁移失败：未配置可用的辅助 API（记忆总结接口），请先在设置中配置后重试");
+            }
+        } catch (err) {
+            console.error("[MemoryBank] Legacy memory migration failed:", err);
+            showNotice("旧记忆迁移失败: " + String(err));
+        } finally {
+            setMigratingLegacy(false);
+            setMigrationProgress(null);
+        }
+    };
     const updateConfig = (patch: Partial<MemoryConfig>) => {
         const next = { ...config, ...patch };
         setConfig(next);
@@ -970,6 +998,30 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     </div>
                 ) : null}
 
+                {/* ── Memory engine version: classic vs Kiwi ── */}
+                <p className="menu-group-desc mx-2">记忆引擎版本</p>
+                <div className="menu-group">
+                    <button type="button" className="menu-item" onClick={() => updateConfig({ memoryEngineVersion: "classic" })}>
+                        <MemorySettingsIcon icon={FileText} color={BINDING_ACCENTS.voice} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">原版记忆系统</span>
+                            <span className="menu-desc">向量相似度/时间排序，无热度机制，Dream 整合停用</span>
+                        </div>
+                        <div className="menu-right">
+                            {config.memoryEngineVersion === "classic" ? <Check size={16} /> : null}
+                        </div>
+                    </button>
+                    <button type="button" className="menu-item" onClick={() => updateConfig({ memoryEngineVersion: "kiwi" })}>
+                        <MemorySettingsIcon icon={Sparkles} color={BINDING_ACCENTS.memory} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">Kiwi 热度引擎（推荐）</span>
+                            <span className="menu-desc">热度召回追踪、遗忘曲线、Dream 梦境整合、记忆星图</span>
+                        </div>
+                        <div className="menu-right">
+                            {config.memoryEngineVersion !== "classic" ? <Check size={16} /> : null}
+                        </div>
+                    </button>
+                </div>
                 {/* Feature toggles */}
                 <p className="menu-group-desc mx-2">自动化</p>
                 <div className="menu-group">
@@ -1018,8 +1070,29 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 </div>
 
                 {/* ── Kiwi heat engine ── */}
-                <p className="menu-group-desc mx-2">记忆热度引擎</p>
+                <p className="menu-group-desc mx-2">记忆热度引擎{config.memoryEngineVersion === "classic" ? "（当前为原版引擎，以下设置不生效）" : ""}</p>
                 <div className="menu-group">
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={Flame} color={BINDING_ACCENTS.memory} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">旧记忆迁移到 Kiwi</span>
+                            <span className="menu-desc">
+                                {migratingLegacy && migrationProgress
+                                    ? `正在迁移 ${migrationProgress.done}/${migrationProgress.total}（LLM 评分+实体抽取）…`
+                                    : "把旧格式记忆用 LLM 补齐重要度与实体标签，融入热度系统（星图/Dream/召回）"}
+                            </span>
+                        </div>
+                        <div className="menu-right">
+                            <button
+                                type="button"
+                                className="ui-btn ui-btn-outline py-1 px-3 ts-12"
+                                onClick={handleMigrateLegacyMemories}
+                                disabled={migratingLegacy}
+                            >
+                                {migratingLegacy ? "迁移中…" : "开始迁移"}
+                            </button>
+                        </div>
+                    </div>
                     <div className="menu-item">
                         <MemorySettingsIcon icon={Flame} color={BINDING_ACCENTS.memory} />
                         <div className="menu-label-group">

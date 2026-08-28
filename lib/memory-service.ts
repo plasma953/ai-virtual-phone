@@ -7,6 +7,13 @@ import { loadMemoryEntriesByType, saveMemoryHeat } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity } from "./memory-embedding";
 import { heatScore, touchMemory } from "./memory-heat";
+/**
+ * 记忆引擎版本判定：classic = 原版（无热度、无 Dream），kiwi = Kiwi 热度引擎。
+ * 这是引擎级总闸——即使 heatEnabled=true，classic 下热度功能也全部停用。
+ */
+export function isKiwiEngine(config: MemoryConfig): boolean {
+    return config.memoryEngineVersion !== "classic";
+}
 import { estimateTokens } from "./token-counter";
 
 /**
@@ -41,8 +48,7 @@ export async function retrieveMemoriesForPrompt(
         return longTermEntries;
     }
 
-    const useHeat = config.heatEnabled !== false;
-
+    const useHeat = isKiwiEngine(config) && config.heatEnabled !== false;
     // Strategy 2: vector recall enabled + embedding API configured → hybrid search
     const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
     if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
@@ -158,7 +164,7 @@ export async function retrieveCoreMemoriesForPrompt(
     if (coreEntries.length === 0) return [];
 
     const now = Date.now();
-    const useHeat = config.heatEnabled !== false;
+const useHeat = isKiwiEngine(config) && config.heatEnabled !== false;
     const heatW = useHeat ? Math.min(1, Math.max(0, config.heatWeightInRanking ?? 0.35)) : 0;
 
     const sorted = [...coreEntries].sort((a, b) => {
@@ -185,7 +191,7 @@ export async function retrieveCoreMemoriesForPrompt(
 
 /** Fire-and-forget: boost heat of recalled entries (persist async, never block). */
 function trackRecalledHeat(entries: MemoryEntry[], config: MemoryConfig): void {
-    if (!entries.length || config.heatEnabled === false) return;
+    if (!entries.length || !isKiwiEngine(config) || config.heatEnabled === false) return;
     const boost = config.heatBoostOnRecall ?? 0.18;
     for (const entry of entries) {
         const touched = touchMemory(entry, boost);

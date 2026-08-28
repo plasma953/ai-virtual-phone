@@ -15,6 +15,7 @@ import {
 } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { effectiveHeat, DEFAULT_INITIAL_HEAT } from "./memory-heat";
+import { isKiwiEngine } from "./memory-service";
 import { simpleLLMCall } from "./api-helpers";
 
 /** Per-character lock to prevent concurrent Dream consolidation. */
@@ -42,7 +43,7 @@ export async function maybeRunDreamConsolidation(
     characterName: string,
 ): Promise<void> {
     const config = loadMemoryConfig();
-    if (config.dreamEnabled === false) return;
+    if (!isKiwiEngine(config) || config.dreamEnabled === false) return;
 
     const before = getLastDreamTimestamp(characterId);
     const intervalMs = (config.dreamIntervalDays ?? 3) * 86_400_000;

@@ -43,7 +43,14 @@ export type MemoryConfig = {
     coreMemoryPrompt: string;               // user-editable prompt template for core-memory extraction
     vnSummaryPrompt: string;                // user-editable prompt for VN chapter summarization
     // ── Kiwi-style heat system ──
-    /** 热度系统开关：检索排序时叠加 heat 加权 + 召回后热度提升 */
+    /**
+     * 记忆引擎版本：
+     * - "classic"：原版行为（向量相似度/时间排序，无热度参与，Dream 不执行）
+     * - "kiwi"：热度引擎 + Dream 梦境整合 + 记忆星图（默认）
+     * 该开关是引擎级总闸：classic 下 heatEnabled/dreamEnabled 等子开关一律不生效。
+     */
+    memoryEngineVersion: "classic" | "kiwi";
+    /** 热度系统开关：检索排序时叠加 heat 加权 + 召回后热度提升（仅 kiwi 引擎生效） */
     heatEnabled: boolean;
     /** 每次召回时热度的提升量（饱和式：heat + boost*(1-heat)） */
     heatBoostOnRecall: number;
@@ -160,6 +167,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     summarizationPrompt: DEFAULT_SUMMARIZATION_PROMPT,
     coreMemoryPrompt: DEFAULT_CORE_MEMORY_PROMPT,
     vnSummaryPrompt: "",
+    memoryEngineVersion: "kiwi",
     heatEnabled: true,
     heatBoostOnRecall: 0.18,
     heatHalfLifeDays: 7,
