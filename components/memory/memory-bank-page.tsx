@@ -1,9 +1,10 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Shield, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Shield, Sparkles, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
+import { MemoryConstellation } from "./memory-constellation";
 import { Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
@@ -30,7 +31,7 @@ import { generateEmbedding, resolveEmbeddingModel } from "@/lib/memory-embedding
 import { BINDING_ACCENTS } from "@/lib/ui-accent-colors";
 
 type MemoryView = "list" | "detail" | "settings";
-type MemoryTab = "short" | "shared" | "core" | "long";
+type MemoryTab = "short" | "shared" | "core" | "long" | "constellation";
 type MemoryBudgetKey = "shortTermTokenBudget" | "coreMemoryTokenBudget" | "longTermTokenBudget";
 
 const MEMORY_TOKEN_BUDGET_MAX = 100000;
@@ -703,6 +704,12 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 userName={resolveUserIdentity(selectedCharId!)?.name || "用户"}
                             />
                         )
+                    ) : activeTab === "constellation" ? (
+                        /* ── Memory Constellation: 记忆星图可视化 ── */
+                        <MemoryConstellation
+                            entries={[...longTermEntries, ...coreEntries]}
+                            config={config}
+                        />
                     ) : activeTab === "core" ? (
                         renderMemoryEntries("core", coreEntries, "暂无核心记忆。长期记忆累计到设定条数后会自动提炼，也可以手动新增。")
                     ) : (
@@ -719,6 +726,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         { key: "shared" as const, icon: Users, label: "共享事件" },
                         { key: "long" as const, icon: Archive, label: "长期" },
                         { key: "core" as const, icon: Archive, label: "核心" },
+                        { key: "constellation" as const, icon: Sparkles, label: "星图" },
                     ]).map(tab => (
                         <button
                             key={tab.key}
