@@ -283,12 +283,28 @@ export type WeixinCloudMessagePullResult = {
 // 每 8 秒一轮的空转检查保持安静，否则 toast 变成噪音反而没人看。
 export const WEIXIN_SYNC_TOAST_EVENT = "weixin-cloud-sync-toast";
 const syncToastLastAt = new Map<string, number>();
-
+/**
+ * 微信云同步提示静默开关（用户要求：打开应用时不要弹「消息包同步中」等提示）。
+ * 默认静默；如需恢复可见提示，把 localStorage 的该键置为 "false" 即可。
+ * 同步本身照常执行，失败信息仍会写入 console.warn，不影响排查。
+ */
+const WEIXIN_SYNC_TOAST_SILENT_KEY = "weixinSyncToastSilent_v1";
+function isWeixinSyncToastSilent(): boolean {
+    if (typeof window === "undefined") return true;
+    try {
+        const raw = window.localStorage.getItem(WEIXIN_SYNC_TOAST_SILENT_KEY);
+        if (raw !== null) return raw !== "false";
+    } catch {
+        // localStorage 不可用时保持静默，避免同步提示刷屏
+    }
+    return true;
+}
 export function emitWeixinSyncToast(
   text: string | null,
   options: { id: string; sticky?: boolean; throttleMs?: number; duration?: number },
 ): void {
   if (typeof window === "undefined") return;
+  if (isWeixinSyncToastSilent()) return;
   const throttleMs = options.throttleMs ?? 0;
   if (text !== null && throttleMs > 0) {
     const last = syncToastLastAt.get(text) ?? 0;
