@@ -18,15 +18,6 @@ import {
     migrateLegacyEntriesToPalace,
 } from "./palace-storage";
 
-/**
- * 旧引擎版本判定。宫殿 v3 起后端恒为记忆宫殿，该函数保留导出
- * 仅为兼容旧引擎模块（memory-dream / memory-conflict）的引用。
- */
-export function isKiwiEngine(_config: MemoryConfig): boolean {
-    void _config;
-    return true;
-}
-
 /** 宫殿节点 → 旧 MemoryEntry 适配（保真字段完整携带，业务格式化器零改动）。 */
 export function palaceNodeToEntry(node: MemoryNode): MemoryEntry {
     const createdIso = new Date(node.createdAt).toISOString();

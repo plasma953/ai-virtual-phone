@@ -1,7 +1,7 @@
 // lib/short-term-assembler.ts
 // Reads native app data (chat messages, moments posts/comments) and provides
 // a unified timeline. Replaces the old ShortTermEvent IndexedDB approach.
-// Used by: memory-bank-page (UI display), memory-summarizer (summarization input).
+// Used by: memory-bank-page (UI display), palace-engine (extraction input).
 
 import { isReadingDiscussMessage, isSystemInstructionMessage, loadChatSessions, loadChatMessages, type ChatMessage } from "./chat-storage";
 import { buildGroupAdminBracketText } from "./group-admin";
