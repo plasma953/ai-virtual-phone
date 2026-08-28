@@ -22,6 +22,13 @@ import { simpleLLMCall } from "./api-helpers";
 import { maybeRunCoreMemoryPipeline } from "./core-memory-builder";
 import { maybeRunDreamConsolidation } from "./memory-dream";
 import { DEFAULT_INITIAL_HEAT } from "./memory-heat";
+import {
+    extractQuoteBlocks,
+    verifyQuotes,
+    QUOTE_REQUIREMENT_SUFFIX,
+    buildQuoteRetrySuffix,
+} from "./memory-quote";
+import { detectAndSupersedeConflicts } from "./memory-conflict";
 
 /** Per-character lock to prevent concurrent summarization. */
 const summarizingSet = new Set<string>();
@@ -97,14 +104,16 @@ export async function runSummarizationPipeline(
 
     // Use user-editable prompt template from config, with placeholder substitution
     const promptTemplate = config.summarizationPrompt?.trim() || DEFAULT_SUMMARIZATION_PROMPT;
-    const summaryPrompt = promptTemplate
+    const basePrompt = promptTemplate
         .replace(/\{\{char\}\}/gi, characterName)
         .replace(/\{\{earliest\}\}/gi, earliest)
         .replace(/\{\{latest\}\}/gi, latest)
         .replace(/\{\{events\}\}/gi, eventsText);
+    // Paramecium 保真层：统一追加逐字引用要求（自定义模板同样生效）
+    const summaryPrompt = basePrompt.includes("[引用") ? basePrompt : basePrompt + QUOTE_REQUIREMENT_SUFFIX;
 
     // Call LLM for summarization — compatible with all providers
-    const result = await simpleLLMCall(
+    let result = await simpleLLMCall(
         apiConfig,
         [{ role: "user", content: summaryPrompt }],
         { temperature: 0.3 },
@@ -119,7 +128,26 @@ export async function runSummarizationPipeline(
         return { success: false, error: "记忆总结结果疑似被截断，已取消入库，请稍后重试或提高模型输出上限" };
     }
 
-    const summary = result.content;
+    // 保真层机械校验：每条引用必须逐字存在于注入给 LLM 的事件原文中
+    let parsed = extractQuoteBlocks(result.content);
+    let quoteCheck = verifyQuotes(parsed.quotes, eventsText);
+    if (quoteCheck.invalid.length > 0) {
+        // 折中策略：带纠错说明重试一次；仍失败则剥离非法引用、保留总结正文入库
+        const retry = await simpleLLMCall(
+            apiConfig,
+            [{ role: "user", content: summaryPrompt + buildQuoteRetrySuffix(quoteCheck.invalid) }],
+            { temperature: 0.3 },
+        );
+        if (retry.content && !retry.wasTruncated) {
+            parsed = extractQuoteBlocks(retry.content);
+            quoteCheck = verifyQuotes(parsed.quotes, eventsText);
+        }
+    }
+    if (quoteCheck.invalid.length > 0) {
+        console.warn("[MemorySummarizer] 非法引用已剥离（无法在事件原文中找到逐字匹配）:", quoteCheck.invalid);
+    }
+
+    const summary = (parsed.body || result.content.trim()).trim();
 
     // Generate embedding for the summary (only if vector recall is enabled)
     let embedding: number[] | undefined;
@@ -163,13 +191,24 @@ export async function runSummarizationPipeline(
         heat: DEFAULT_INITIAL_HEAT,
         heatUpdatedAt: now,
         accessCount: 0,
+        // 保真层：逐字引用锚点（机械校验通过的第一条引用）+ 引用来源
+        quote: quoteCheck.valid[0],
+        quoteSource: `${earliest} ~ ${latest}（${allEntries.length}条事件）`,
         metadata: {
             summarizedEvents: allEntries.length,
             timeSpan: `${earliest} ~ ${latest}`,
             sourceSessionIds,
+            quoteVerified: quoteCheck.invalid.length === 0,
+            quoteCount: quoteCheck.valid.length,
         },
     };
     await saveMemoryEntry(longTermEntry);
+
+    // 保真层：矛盾失效检测（独立 LLM 比对，高置信度矛盾 → 旧条目标 superseded）。
+    // 失败不阻塞总结主流程，仅记日志。
+    await detectAndSupersedeConflicts(characterId, longTermEntry, characterName).catch(err => {
+        console.warn("[MemoryConflict] Conflict detection failed:", err);
+    });
 
     // Update last summarized timestamp + reset counter
     setLastSummarizedTimestamp(characterId, latest);

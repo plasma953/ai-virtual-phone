@@ -2,7 +2,7 @@
 // IndexedDB persistence for long-term memory entries + short-term events + localStorage config.
 
 import type { MemoryEntry, MemoryConfig } from "./memory-types";
-import { DEFAULT_MEMORY_CONFIG } from "./memory-types";
+import { DEFAULT_MEMORY_CONFIG, isMemoryActive } from "./memory-types";
 import { kvGet, kvSet, registerKvMigration, registerDynamicPrefix } from "./kv-db";
 import { openIndexedDbAtLeast } from "./idb-open";
 
@@ -69,7 +69,15 @@ export async function saveMemoryEntry(entry: MemoryEntry): Promise<void> {
     }
 }
 
-export async function loadMemoryEntries(characterId: string): Promise<MemoryEntry[]> {
+/**
+ * 读取角色的记忆条目。
+ * 保真层默认过滤：archived / superseded 状态不参与召回注入（默认排除）。
+ * 需要完整数据（如记忆银行展示、迁移扫描、超额清理）时传 includeInactive。
+ */
+export async function loadMemoryEntries(
+    characterId: string,
+    options?: { includeInactive?: boolean },
+): Promise<MemoryEntry[]> {
     const db = await openDb();
     if (!db) return [];
     try {
@@ -85,20 +93,22 @@ export async function loadMemoryEntries(characterId: string): Promise<MemoryEntr
             entries = allEntries.filter(entry => entry.characterId === characterId);
         }
         entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        if (options?.includeInactive !== true) {
+            entries = entries.filter(isMemoryActive);
+        }
         return entries;
     } finally {
         db.close();
     }
 }
-
 export async function loadMemoryEntriesByType(
     characterId: string,
     type: MemoryEntry["type"],
+    options?: { includeInactive?: boolean },
 ): Promise<MemoryEntry[]> {
-    const entries = await loadMemoryEntries(characterId);
+    const entries = await loadMemoryEntries(characterId, options);
     return entries.filter(entry => entry.type === type);
 }
-
 export async function deleteMemoryEntry(id: string): Promise<void> {
     const db = await openDb();
     if (!db) return;
@@ -134,7 +144,9 @@ export async function deleteMemoryEntries(ids: string[]): Promise<void> {
 }
 
 export async function deleteCharacterMemories(characterId: string): Promise<void> {
-    const entries = await loadMemoryEntries(characterId);
+    // 用户主动「清除全部」：包含归档/失效条目，真正清空。
+    // 保真层的默认过滤语义（只看活跃）不适用于删除场景。
+    const entries = await loadMemoryEntries(characterId, { includeInactive: true });
     await deleteMemoryEntries(entries.map(e => e.id));
 }
 
@@ -142,7 +154,7 @@ export async function deleteCharacterMemoriesByType(
     characterId: string,
     type: MemoryEntry["type"],
 ): Promise<void> {
-    const entries = await loadMemoryEntriesByType(characterId, type);
+    const entries = await loadMemoryEntriesByType(characterId, type, { includeInactive: true });
     await deleteMemoryEntries(entries.map(e => e.id));
 }
 

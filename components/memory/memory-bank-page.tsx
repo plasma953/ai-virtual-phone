@@ -1,7 +1,7 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Shield, Sparkles, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, Flame, Moon, CalendarDays, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Shield, Sparkles, RotateCcw, type LucideIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { MemoryConstellation } from "./memory-constellation";
@@ -9,7 +9,8 @@ import { Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import type { MemoryEntry, MemoryConfig } from "@/lib/memory-types";
-import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_SUMMARIZATION_PROMPT } from "@/lib/memory-types";
+import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_SUMMARIZATION_PROMPT, isMemoryActive } from "@/lib/memory-types";
+import { DEFAULT_INITIAL_HEAT } from "@/lib/memory-heat";
 import {
     loadMemoryConfig,
     saveMemoryConfig,
@@ -276,9 +277,11 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         setLoading(true);
         try {
             await hydrateChatStorage();
+            // 保真层：详情页加载全量（含归档/失效），列表按状态分区展示；
+            // 召回注入与星图仍只使用活跃条目（在渲染层过滤）。
             const [core, lt] = await Promise.all([
-                loadMemoryEntriesByType(charId, "core"),
-                loadMemoryEntriesByType(charId, "long_term"),
+                loadMemoryEntriesByType(charId, "core", { includeInactive: true }),
+                loadMemoryEntriesByType(charId, "long_term", { includeInactive: true }),
             ]);
             setCoreEntries(core);
             setLongTermEntries(lt);
@@ -335,6 +338,22 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         await deleteCharacterMemoriesByType(selectedCharId, type);
         if (type === "core") setCoreEntries([]);
         else setLongTermEntries([]);
+        loadCharacterList();
+    };
+
+    /** 保真层：复活归档/失效条目——恢复 active 状态并重置热度（视为「重新想起」）。 */
+    const handleReviveEntry = async (entry: MemoryEntry) => {
+        if (!selectedCharId) return;
+        const now = new Date().toISOString();
+        await saveMemoryEntry({
+            ...entry,
+            status: "active",
+            updatedAt: now,
+            heat: DEFAULT_INITIAL_HEAT,
+            heatUpdatedAt: now,
+        });
+        showNotice("记忆已复活，重新参与召回与星图");
+        loadDetailData(selectedCharId);
         loadCharacterList();
     };
 
@@ -599,6 +618,98 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
 
     const renderMemoryEntries = (type: MemoryEntry["type"], entries: MemoryEntry[], emptyText: string) => {
         const label = type === "core" ? "核心记忆" : "长期记忆";
+        // 保真层：活跃条目在前，归档/失效条目分区展示（不参与召回，可复活）
+        const activeEntries = entries.filter(isMemoryActive);
+        const inactiveEntries = entries.filter(entry => !isMemoryActive(entry));
+        const archivedCount = inactiveEntries.filter(e => e.status === "archived").length;
+        const supersededCount = inactiveEntries.length - archivedCount;
+
+        const renderEntryCard = (entry: MemoryEntry, inactive: boolean) => {
+            const statusLabel = entry.status === "superseded" ? "已失效" : "已归档";
+            return (
+                <div
+                    key={entry.id}
+                    className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
+                    style={inactive ? { opacity: 0.62, borderStyle: "dashed" } : undefined}
+                    onClick={() => {
+                        if (entryMenuId) {
+                            setEntryMenuId(null);
+                            return;
+                        }
+                        setExpandedId(expandedId === entry.id ? null : entry.id);
+                    }}
+                >
+                    <div className="mem-report-head">
+                        <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {relativeTime(entry.createdAt)} ]</span>
+                        <div className="mem-report-actions">
+                            <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
+                                {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
+                            </span>
+                            {inactive && (
+                                <span className="ts-10" style={{ padding: "2px 8px", borderRadius: 8, fontWeight: 600, letterSpacing: "1px", background: entry.status === "superseded" ? "rgba(199,138,176,0.18)" : "rgba(91,107,158,0.22)", color: entry.status === "superseded" ? "#c78ab0" : "#8b9dc3" }}>
+                                    {statusLabel}
+                                </span>
+                            )}
+                            <div className="mem-entry-menu-wrap">
+                                <button
+                                    className="mem-entry-menu-btn"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        setEntryMenuId(prev => prev === entry.id ? null : entry.id);
+                                    }}
+                                    title="更多"
+                                >
+                                    <MoreHorizontal size={18} />
+                                </button>
+                                {entryMenuId === entry.id && (
+                                    <div className="mem-entry-menu" onClick={event => event.stopPropagation()}>
+                                        {inactive && (
+                                            <button onClick={() => {
+                                                setEntryMenuId(null);
+                                                void handleReviveEntry(entry);
+                                            }}>
+                                                <RotateCcw size={13} />
+                                                <span>复活</span>
+                                            </button>
+                                        )}
+                                        <button onClick={() => openEditMemoryEditor(entry)}>
+                                            <Edit3 size={13} />
+                                            <span>编辑</span>
+                                        </button>
+                                        <button
+                                            className="is-danger"
+                                            onClick={() => {
+                                                setEntryMenuId(null);
+                                                setConfirmDeleteEntryId(entry.id);
+                                            }}
+                                        >
+                                            <Trash2 size={13} />
+                                            <span>删除</span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="ts-12 leading-[1.7]">
+                        {expandedId === entry.id
+                            ? entry.content
+                            : entry.content.length > 100
+                                ? entry.content.slice(0, 100) + "..."
+                                : entry.content
+                        }
+                    </div>
+                    {expandedId === entry.id && entry.quote && (
+                        <div className="ts-11" style={{ marginTop: 8, padding: "8px 10px", borderRadius: 10, background: "rgba(139,123,184,0.12)", borderLeft: "3px solid rgba(139,123,184,0.55)", lineHeight: 1.6, color: "#b9a8dc" }}>
+                            <span style={{ fontWeight: 600, marginRight: 6 }}>📎 原文引用</span>
+                            {entry.quoteSource ? <span style={{ opacity: 0.7 }}>{entry.quoteSource}：</span> : null}
+                            “{entry.quote}”
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         return (
             <>
                 {entries.length > 0 && (
@@ -635,66 +746,21 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         </button>
                     </div>
                 ) : (
-                    entries.map(entry => (
-                        <div
-                            key={entry.id}
-                            className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
-                            onClick={() => {
-                                if (entryMenuId) {
-                                    setEntryMenuId(null);
-                                    return;
-                                }
-                                setExpandedId(expandedId === entry.id ? null : entry.id);
-                            }}
-                        >
-                            <div className="mem-report-head">
-                                <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {relativeTime(entry.createdAt)} ]</span>
-                                <div className="mem-report-actions">
-                                    <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
-                                        {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
-                                    </span>
-                                    <div className="mem-entry-menu-wrap">
-                                        <button
-                                            className="mem-entry-menu-btn"
-                                            onClick={(event) => {
-                                                event.stopPropagation();
-                                                setEntryMenuId(prev => prev === entry.id ? null : entry.id);
-                                            }}
-                                            title="更多"
-                                        >
-                                            <MoreHorizontal size={18} />
-                                        </button>
-                                        {entryMenuId === entry.id && (
-                                            <div className="mem-entry-menu" onClick={event => event.stopPropagation()}>
-                                                <button onClick={() => openEditMemoryEditor(entry)}>
-                                                    <Edit3 size={13} />
-                                                    <span>编辑</span>
-                                                </button>
-                                                <button
-                                                    className="is-danger"
-                                                    onClick={() => {
-                                                        setEntryMenuId(null);
-                                                        setConfirmDeleteEntryId(entry.id);
-                                                    }}
-                                                >
-                                                    <Trash2 size={13} />
-                                                    <span>删除</span>
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
+                    <>
+                        {activeEntries.map(entry => renderEntryCard(entry, false))}
+                        {inactiveEntries.length > 0 && (
+                            <>
+                                <div className="ts-11 text-secondary" style={{ marginTop: 10, padding: "0 4px", letterSpacing: "1px" }}>
+                                    {[
+                                        archivedCount > 0 ? `已归档 · ${archivedCount}` : "",
+                                        supersededCount > 0 ? `已失效 · ${supersededCount}` : "",
+                                    ].filter(Boolean).join("　")}
+                                    （不参与召回，可在菜单中复活）
                                 </div>
-                            </div>
-                            <div className="ts-12 leading-[1.7]">
-                                {expandedId === entry.id
-                                    ? entry.content
-                                    : entry.content.length > 100
-                                        ? entry.content.slice(0, 100) + "..."
-                                        : entry.content
-                                }
-                            </div>
-                        </div>
-                    ))
+                                {inactiveEntries.map(entry => renderEntryCard(entry, true))}
+                            </>
+                        )}
+                    </>
                 )}
             </>
         );
@@ -733,9 +799,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             />
                         )
                     ) : activeTab === "constellation" ? (
-                        /* ── Memory Constellation: 记忆星图可视化 ── */
+                        /* ── Memory Constellation: 记忆星图可视化 ──
+                           保真层：归档/失效记忆不上星图——星图只画「活着的记忆」 */
                         <MemoryConstellation
-                            entries={[...longTermEntries, ...coreEntries]}
+                            entries={[...longTermEntries, ...coreEntries].filter(isMemoryActive)}
                             config={config}
                         />
                     ) : activeTab === "core" ? (
@@ -1102,6 +1169,18 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         <div className="menu-right">
                             <Toggle checked={config.heatEnabled ?? true} onChange={(v) => {
                                 updateConfig({ heatEnabled: v });
+                            }} />
+                        </div>
+                    </div>
+                    <div className="menu-item">
+                        <MemorySettingsIcon icon={Shield} color={BINDING_ACCENTS.memory} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">矛盾自动失效</span>
+                            <span className="menu-desc">新记忆与旧记忆明确矛盾时，旧条目自动标记「已失效」退出召回（可复活，不删除）</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle checked={config.conflictDetectionEnabled ?? true} onChange={(v) => {
+                                updateConfig({ conflictDetectionEnabled: v });
                             }} />
                         </div>
                     </div>

@@ -27,7 +27,23 @@ export type MemoryEntry = {
     dreamCompacted?: boolean;
     /** Dream 产物：指向被整合的源记忆 ID 列表 */
     originIds?: string[];
+    // ── 保真层（Paramecium 式原文锚定，2026-08-28）──
+    /**
+     * 记忆状态：
+     * - active（默认）：参与召回与注入
+     * - archived：已被 Dream 整合归档——不参与注入/召回，但保留可查、可复活
+     * - superseded：被矛盾新记忆取代——退出排名不删除，可复活
+     */
+    status?: "active" | "archived" | "superseded";
+    /** 逐字引用锚点：从源事件/源记忆原文中机械校验过的原句（10-40字，一字不差） */
+    quote?: string;
+    /** 引用来源说明（如源事件时间范围） */
+    quoteSource?: string;
 };
+/** 记忆是否处于活跃状态（archived/superseded 均不参与召回注入） */
+export function isMemoryActive(entry: MemoryEntry): boolean {
+    return entry.status !== "archived" && entry.status !== "superseded";
+}
 
 export type MemoryConfig = {
     autoSummarizeEnabled: boolean;          // whether auto-summarization runs after N events
@@ -58,6 +74,8 @@ export type MemoryConfig = {
     heatHalfLifeDays: number;
     /** 热度在检索排序中的权重 0-1（剩余的权重给向量相似度） */
     heatWeightInRanking: number;
+    /** 矛盾自动失效：新记忆与旧记忆高置信度矛盾时，旧条目标 superseded（退出排名、可复活） */
+    conflictDetectionEnabled: boolean;
     // ── Kiwi-style Dream consolidation ──
     /** Dream 整合开关：定期把低热度碎片记忆压缩提炼成高浓度记忆 */
     dreamEnabled: boolean;
@@ -122,6 +140,16 @@ export const DEFAULT_SUMMARIZATION_PROMPT = `你是一个记忆整理助手。�
 - 100-200字
 - 不要包含格式标记
 
+总结正文写完后，必须附上「逐字引用」区块（每行一条，格式如下）：
+[引用: "从上方事件记录中逐字复制的原文片段"]
+[引用: "另一条逐字复制的原文片段"]
+
+逐字引用要求：
+- 每条引用必须一字不差地出现在上方「事件记录」中，不得改写、增删字、加省略号或换词
+- 每条引用 10-40 字，至少 1 条，最多 3 条
+- 只抄事实性原文（人名、承诺、偏好、关键事件），不要包含"事件""私聊"等格式前缀
+- 宁可少写，绝不编造
+
 总结：`;
 
 /**
@@ -172,6 +200,7 @@ export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     heatBoostOnRecall: 0.18,
     heatHalfLifeDays: 7,
     heatWeightInRanking: 0.35,
+    conflictDetectionEnabled: true,
     dreamEnabled: true,
     dreamIntervalDays: 3,
     dreamColdHeatThreshold: 0.3,

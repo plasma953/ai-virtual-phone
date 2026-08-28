@@ -150,7 +150,8 @@ export async function migrateLegacyMemories(opts?: {
     const charIds = await getAllCharacterIdsWithMemories();
     const legacy: MemoryEntry[] = [];
     for (const charId of charIds) {
-        const entries = await loadMemoryEntries(charId);
+        // 归档/失效条目同样补齐热度元数据：复活后可直接参与召回。
+        const entries = await loadMemoryEntries(charId, { includeInactive: true });
         for (const entry of entries) {
             if (isLegacyEntry(entry)) legacy.push(entry);
         }
