@@ -441,8 +441,14 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             });
             if (stats.scanned === 0) {
                 showNotice("没有需要迁移的旧记忆（所有记忆都已在 Kiwi 热度系统中）");
-            } else if (stats.migrated > 0) {
-                showNotice(`迁移完成：成功 ${stats.migrated} 条${stats.failed ? `，失败 ${stats.failed} 条（可重试）` : ""}`);
+            } else if (stats.migrated + stats.splitEntries > 0) {
+                const parts = [`成功 ${stats.migrated + stats.splitEntries} 条`];
+                if (stats.splitEntries > 0) {
+                    parts.push(`拆分大块记忆 ${stats.splitEntries} 条 → 原子记忆 ${stats.splitProduced} 条（原文已归档，可复活回滚）`);
+                }
+                const failCount = stats.failed + stats.splitFailed;
+                if (failCount > 0) parts.push(`失败/回退 ${failCount} 条（可重试）`);
+                showNotice(`迁移完成：${parts.join("，")}`);
                 if (selectedCharId) loadDetailData(selectedCharId);
                 loadCharacterList();
             } else {
@@ -1145,8 +1151,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             <span className="menu-label">旧记忆迁移到 Kiwi</span>
                             <span className="menu-desc">
                                 {migratingLegacy && migrationProgress
-                                    ? `正在迁移 ${migrationProgress.done}/${migrationProgress.total}（LLM 评分+实体抽取）…`
-                                    : "把旧格式记忆用 LLM 补齐重要度与实体标签，融入热度系统（星图/Dream/召回）"}
+                                    ? `正在迁移 ${migrationProgress.done}/${migrationProgress.total}（大块原子拆分 + 小块评分，含引用校验）…`
+                                    : "大块旧记忆会被 LLM 智能拆分成原子化记忆（只拆不编，逐字引用锚定，原文归档可回滚）；小块记忆补齐标签融入热度系统"}
                             </span>
                         </div>
                         <div className="menu-right">

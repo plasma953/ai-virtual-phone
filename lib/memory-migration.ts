@@ -294,7 +294,7 @@ export async function migrateLegacyMemories(opts?: {
                         heat: DEFAULT_INITIAL_HEAT,
                         heatUpdatedAt: now,
                         accessCount: 0,
-                        quote: atom.quote,
+                        quote: atom.quote ?? undefined,
                         quoteSource: `拆分自旧记忆（${entry.createdAt.slice(0, 10)}）`,
                         metadata: {
                             origin: "legacy_split",
