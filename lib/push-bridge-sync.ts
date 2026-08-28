@@ -138,7 +138,7 @@ async function buildRuleSnapshot(rule: BridgeRule): Promise<Record<string, unkno
         const shortcutContinuation = buildOfflineShortcutContinuation(llmMessages, messages => {
             const req = buildProviderRequest(config, preset, toLlmRequestMessages(messages));
             return { url: req.url, headers: req.headers, body: req.body, providerKind: req.providerKind };
-        });
+        }, config.enableImageRecognition === true);
 
         // ai 加工模式：预挂一个轻量加工请求（提示词里的 {payload} 也换成哨兵）
         let processRequest: Record<string, unknown> | undefined;

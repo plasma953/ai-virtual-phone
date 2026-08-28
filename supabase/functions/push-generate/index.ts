@@ -283,6 +283,8 @@ type JobPayload = {
     replyMarker: string;
     resultMarker: string;
     imageMarker?: string;
+    /** 角色 API 的图像识别开关（客户端挂快照时写入）；缺省视为开，兼容老快照 */
+    visionEnabled?: boolean;
   };
   merge?: Record<string, unknown> & { sessionId?: string };
 };
@@ -299,6 +301,10 @@ type ShortcutCommandRow = {
 
 // 【快捷动作：名称】与带参数的【快捷动作：名称({...})】都要认。参数允许换行
 // （模型爱把 JSON 展开写），所以参数段用 [\s\S] 而不是 [^\n]。
+/** 识图关着时代替截图进上下文的说明：不留这句话，模型面对的是空白，
+ *  既不知道图回没回来，也不知道自己为什么看不见。 */
+const SHORTCUT_VISION_OFF_NOTE = "（系统记录：未配置或未启用图像识别，本轮回传的图片没有交给你；请结合上一条的文字内容回应。）";
+
 const SHORTCUT_MARKER_RE = /【快捷动作[：:]\s*([^(（）)】\n]{1,60}?)\s*(?:[(（]([\s\S]{0,2000}?)[)）])?\s*】/;
 const SHORTCUT_MARKER_STRIP_RE = new RegExp(SHORTCUT_MARKER_RE.source, "g");
 
@@ -881,8 +887,16 @@ Deno.serve(async (req: Request) => {
                 const contRequest = JSON.parse(JSON.stringify(continuation.request)) as JobPayload["request"];
                 replaceMarker(contRequest.body, continuation.replyMarker, rawText);
                 const isImage = resultMode === "image";
-                if (!isImage && continuation.imageMarker) {
-                  replaceMarker(contRequest.body, continuation.imageMarker, "（该动作没有图片回传）");
+                // 识图关着就不送图：送了轻则被模型忽略，重则接口直接 400 让整个
+                // 第二轮失败（角色说了"我去看一眼"然后没有下文）。图片位改放一句
+                // 说明，OCR 之类的附带文字仍照常经 resultMarker 抵达。
+                const canSendImage = isImage && continuation.visionEnabled !== false;
+                if (!canSendImage && continuation.imageMarker) {
+                  replaceMarker(
+                    contRequest.body,
+                    continuation.imageMarker,
+                    isImage ? SHORTCUT_VISION_OFF_NOTE : "（该动作没有图片回传）",
+                  );
                 }
                 const expiresIn = Math.max(30, Math.min(900, Number(action.expiresInSeconds) || 120));
                 const contPayload = {
@@ -892,7 +906,7 @@ Deno.serve(async (req: Request) => {
                     actionName: String(action.name ?? "快捷动作"),
                     resultMode,
                     resultMarker: continuation.resultMarker,
-                    ...(isImage && continuation.imageMarker ? { imageMarker: continuation.imageMarker } : {}),
+                    ...(canSendImage && continuation.imageMarker ? { imageMarker: continuation.imageMarker } : {}),
                     style: "text",
                   },
                   notify: payload.notify,

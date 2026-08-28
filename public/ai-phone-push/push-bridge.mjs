@@ -127,6 +127,10 @@ async function sendWebPushRaw(
 // ── 主流程 ──
 
 
+/** 识图关着时代替截图进上下文的说明：不留这句话，模型面对的是空白，
+ *  既不知道图回没回来，也不知道自己为什么看不见。 */
+const SHORTCUT_VISION_OFF_NOTE = "（系统记录：未配置或未启用图像识别，本轮回传的图片没有交给你；请结合上一条的文字内容回应。）";
+
 const BRIDGE_EVENT_SENTINEL = "BRIDGE_EVENT_TEXT";
 
 function stripHallucinatedTimestamps(text: string): string {
@@ -332,6 +336,8 @@ type RuleSnapshot = {
     replyMarker: string;
     resultMarker: string;
     imageMarker?: string;
+    /** 角色 API 的图像识别开关（客户端挂快照时写入）；缺省视为开，兼容老快照 */
+    visionEnabled?: boolean;
   };
   reply?: Record<string, unknown>;
 };
@@ -866,8 +872,15 @@ Deno.serve(async (req: Request) => {
                   contBodyJson = substituteSentinel(contBodyJson, BRIDGE_EVENT_SENTINEL, processed);
                   contBodyJson = substituteSentinel(contBodyJson, continuation.replyMarker, replyRaw);
                   const isImage = resultMode === "image";
-                  if (!isImage && continuation.imageMarker) {
-                    contBodyJson = substituteSentinel(contBodyJson, continuation.imageMarker, "（该动作没有图片回传）");
+                  // 识图关着就不送图：送了轻则被模型忽略，重则接口直接 400 让整个
+                  // 第二轮失败。图片位改放一句说明，附带文字仍经 resultMarker 抵达。
+                  const canSendImage = isImage && continuation.visionEnabled !== false;
+                  if (!canSendImage && continuation.imageMarker) {
+                    contBodyJson = substituteSentinel(
+                      contBodyJson,
+                      continuation.imageMarker,
+                      isImage ? SHORTCUT_VISION_OFF_NOTE : "（该动作没有图片回传）",
+                    );
                   }
                   const expiresIn = Math.max(30, Math.min(900, Number(catalogAction.expiresInSeconds) || 120));
                   const contPayload = {
@@ -877,7 +890,7 @@ Deno.serve(async (req: Request) => {
                       actionName: String(catalogAction.name ?? "快捷动作"),
                       resultMode,
                       resultMarker: continuation.resultMarker,
-                      ...(isImage && continuation.imageMarker ? { imageMarker: continuation.imageMarker } : {}),
+                      ...(canSendImage && continuation.imageMarker ? { imageMarker: continuation.imageMarker } : {}),
                       style: "text",
                     },
                     notify: { title: rule.chat?.characterName || "小手机", url: "/" },

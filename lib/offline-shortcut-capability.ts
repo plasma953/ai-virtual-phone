@@ -43,12 +43,15 @@ export type OfflineShortcutContinuation = {
   replyMarker: string;
   resultMarker: string;
   imageMarker: string;
+  /** 该角色 API 的图像识别开关：关着时云端不注入图片，只在图片位代入一句说明 */
+  visionEnabled: boolean;
 };
 
 /** 有会回传结果的快捷动作时，预挂一份"结果续跑"快照（与前台 text 式续跑同构）。 */
 export function buildOfflineShortcutContinuation(
   llmMessages: LLMMessage[],
   buildRequest: (messages: LLMMessage[]) => OfflineShortcutContinuation["request"],
+  visionEnabled: boolean,
 ): OfflineShortcutContinuation | null {
   if (!availableActions().some(action => action.resultMode !== "none")) return null;
   try {
@@ -63,6 +66,7 @@ export function buildOfflineShortcutContinuation(
       replyMarker: OFFLINE_SHORTCUT_REPLY_MARKER,
       resultMarker: OFFLINE_SHORTCUT_RESULT_MARKER,
       imageMarker: OFFLINE_SHORTCUT_IMAGE_MARKER,
+      visionEnabled,
     };
   } catch {
     return null;

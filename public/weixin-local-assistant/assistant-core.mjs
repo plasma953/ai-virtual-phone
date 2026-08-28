@@ -19,6 +19,9 @@ const LOCK_PREFIX = "weixin-cloud/locks";
 const PENDING_FLAG_PREFIX = "weixin-cloud/pending";
 const WEIXIN_SHORTCUT_RESULT_MARKER = "__FLOAT_WEIXIN_SHORTCUT_RESULT__";
 const WEIXIN_SHORTCUT_IMAGE_MARKER = "__FLOAT_WEIXIN_SHORTCUT_IMAGE__";
+// 识图关着时代替截图进上下文的说明：不留这句话，模型面对的是空白，
+// 既不知道图回没回来，也不知道自己为什么看不见。
+const SHORTCUT_VISION_OFF_NOTE = "（系统记录：未配置或未启用图像识别，本轮回传的图片没有交给你；请结合上一条的文字内容回应。）";
 const ILINK_BASE = "https://ilinkai.weixin.qq.com";
 const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
 const BASE_INFO = { channel_version: "1.0.2" };
@@ -708,12 +711,15 @@ async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstR
 
   if (action.resultMode !== "none") {
     try {
+    // 识图关着就不送图：送了轻则被模型忽略，重则接口直接 400 让整个第二轮
+    // 失败。图片位改放一句说明，附带文字仍照常经结果占位抵达。
+    const canSendImage = action.resultMode === "image" && runtime.promptContext?.enableVision === true;
     const messages = [
       ...compactContinuationMessages(firstMessages),
       { role: "assistant", content: firstReply },
       { role: "user", content: WEIXIN_SHORTCUT_RESULT_MARKER },
       ...(action.resultMode === "image"
-        ? [{ role: "user", content: WEIXIN_SHORTCUT_IMAGE_MARKER }]
+        ? [{ role: "user", content: canSendImage ? WEIXIN_SHORTCUT_IMAGE_MARKER : SHORTCUT_VISION_OFF_NOTE }]
         : []),
     ];
     const request = buildChatCompletionRequest(runtime.apiConfig || {}, runtime.preset || null, messages);
@@ -724,7 +730,7 @@ async function prepareWeixinShortcut(env, runtime, action, firstMessages, firstR
         actionName: action.name,
         resultMode: action.resultMode,
         resultMarker: WEIXIN_SHORTCUT_RESULT_MARKER,
-        ...(action.resultMode === "image" ? { imageMarker: WEIXIN_SHORTCUT_IMAGE_MARKER } : {}),
+        ...(canSendImage ? { imageMarker: WEIXIN_SHORTCUT_IMAGE_MARKER } : {}),
         style: "text",
       },
       notify: { title: runtime.character?.name || "小手机", url: "/" },
