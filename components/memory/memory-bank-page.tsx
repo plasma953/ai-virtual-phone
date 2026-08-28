@@ -1030,6 +1030,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                             <div className="ts-10 text-secondary" style={{ marginTop: 3 }}>
                                                 重要度 {Math.round(atom.importance * 100)}%{atom.embedding ? " · 已生成向量" : " · 无向量（召回链路兜底）"}
                                             </div>
+                                            <div className="ts-10" style={{ marginTop: 3, color: "#8b9dc3" }}>
+                                                🕐 {atom.timestamp ? new Date(atom.timestamp).toLocaleDateString() : "未标注时间（入库时继承源记忆时间）"}
+                                            </div>
                                         </div>
                                     ))}
                                     <div className="flex justify-end" style={{ gap: 8, marginTop: 12 }}>

@@ -21,6 +21,9 @@ export type SplitPreviewAtom = {
     /** 逐字引用锚点（已通过机械校验，确保逐字存在于源原文） */
     quote: string;
     importance: number;
+    /** 该事实发生的时间（ISO 字符串）：LLM 从原文提取/推断，经校验后
+     *  写入各自 createdAt，避免拆出的记忆共用同一时间线导致记串。 */
+    timestamp?: string;
     /** 拆分时同步生成的向量（向量 API 不可用时为空，入库后可由召回链路兜底） */
     embedding?: number[];
 };
@@ -39,6 +42,21 @@ function verifySplitQuote(quote: string, sourceText: string): boolean {
     const s = normalizeForMatch(sourceText);
     if (s.length < 6) return normalizeForMatch(quote) === s;
     return false;
+}
+
+/**
+ * 原子时间戳归一化：接受 YYYY-MM-DD 或完整 ISO；无效/未来日期回退源时间。
+ * 每条原子记忆独立携带时间，防止拆出来的事实共用同一 createdAt 而记串。
+ */
+function normalizeAtomTimestamp(raw: unknown): string | undefined {
+    if (typeof raw !== "string" || !raw.trim()) return undefined;
+    const cleaned = raw.trim();
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(cleaned) ? `${cleaned}T12:00:00.000Z` : cleaned;
+    const ms = Date.parse(iso);
+    if (Number.isNaN(ms)) return undefined;
+    // 未来时间不可信（防模型幻觉）；其余合法时间均可采用
+    if (ms > Date.now() + 86_400_000) return undefined;
+    return new Date(ms).toISOString();
 }
 
 /** 拆分 LLM 调用与解析（内部共享：首生成与重新生成走同一逻辑） */
@@ -66,10 +84,13 @@ async function callSplitLLM(
         `- 每条原子记忆的 importance（0-1 小数）必须独立重新评估，不要保持统一：`,
         `  按该事实对两人关系的分量打分——核心承诺/关系里程碑/强烈情感节点给 0.7-1.0，`,
         `  普通偏好/日常事件给 0.2-0.5，琐碎细节给 0.1-0.3；不要照抄源记忆的重要性`,
+        `- 每条原子记忆必须输出 time 字段：该事实发生的时间（YYYY-MM-DD 格式）。`,
+        `  原文有明确日期/时间就用原文的；原文用相对时间（昨天/上周/月初）就按上下文推断；`,
+        `  完全推断不出就输出空字符串。禁止编造具体日期，避免时间线记串`,
         `- 宁可少拆，绝不编造；拆不出来的一条都不要输出`,
         "",
         `只返回 JSON，不要任何解释，格式：`,
-        `{"atoms":[{"content":"原子记忆事实","quote":"逐字复制的原文片段","importance":0.9},{"content":"另一条事实","quote":"另一段逐字原文","importance":0.3}]}`,
+        `{"atoms":[{"content":"原子记忆事实","quote":"逐字复制的原文片段","importance":0.9,"time":"2026-08-20"},{"content":"另一条事实","quote":"另一段逐字原文","importance":0.3,"time":"2026-08-15"}]}`,
     ].join("\n");
 
     const resp = await simpleLLMCall(
@@ -110,8 +131,10 @@ async function callSplitLLM(
             if (typeof item.importance === "number" && Number.isFinite(item.importance)) {
                 importance = Math.min(1, Math.max(0.1, item.importance));
             }
+            // 每条原子独立时间戳：LLM 从原文提取/推断，无效/未来日期回退源时间（调用侧兜底）
+            const timestamp = normalizeAtomTimestamp(item.time);
             const body = extractQuoteBlocks(rawContent).body || rawContent;
-            atoms.push({ content: body.slice(0, SPLIT_CONTENT_MAX), quote, importance });
+            atoms.push({ content: body.slice(0, SPLIT_CONTENT_MAX), quote, importance, timestamp });
         }
         return atoms.length > 0 ? atoms : null;
     } catch {
@@ -148,8 +171,8 @@ export async function previewLegacySplit(
 }
 
 /**
- * 应用拆分：原子记忆写库（heat=0.7，继承源时间线与来源），源条目归档
- * （archived，原文永存、可复活回滚）。由用户在预览确认后调用。
+ * 应用拆分：原子记忆写库（heat=0.7，每条携带各自时间戳——提取失败则继承源时间线），
+ * 源条目归档（archived，原文永存、可复活回滚）。由用户在预览确认后调用。
  */
 export async function applyLegacySplit(preview: SplitPreview): Promise<void> {
     const now = new Date().toISOString();
@@ -170,7 +193,8 @@ async function saveAtomEntry(source: MemoryEntry, atom: SplitPreviewAtom, now: s
         type: source.type,
         content: atom.content,
         importance: atom.importance,
-        createdAt: source.createdAt,
+        // 独立时间线：优先用该事实自己的时间戳；提取失败时回退源条目时间
+        createdAt: atom.timestamp ?? source.createdAt,
         updatedAt: now,
         heat: DEFAULT_INITIAL_HEAT,
         heatUpdatedAt: now,
