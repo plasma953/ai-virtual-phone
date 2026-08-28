@@ -1547,7 +1547,11 @@ export function startWeixinCloudRealtimeSync(): () => void {
     // 「时间戳 > 运行包生成时刻」过滤云对象（assistant-core 的 generateReply），
     // 那条云对象本来就不进提示词——删了等于没删，云端照样记得。
     // 重新烘焙一次运行包才能真正让删除生效。防抖会把连删的一批合成一次。
-    scheduleRuntimeSync();
+    //
+    // 但只有删到微信那个角色的消息才需要重烘：运行包里只有绑定 bot 的角色，
+    // 删别的角色的消息重烘出来一模一样，白传一遍不说，用户在别处聊天时
+    // 还会莫名其妙看见「微信运行包同步中…」。
+    if (messages.some(touchesWeixinRuntime)) scheduleRuntimeSync();
   };
 
   // ── 运行包自动同步 ──
@@ -1679,6 +1683,12 @@ export async function syncLocalWeixinCloudMessageToCloud(message: ChatMessage): 
  * 云端就同时存在原文与编辑版，助手组提示词时两份都读得到。这里只改 content，
  * 保留 externalId / raw / needsReply 等字段，云端对象数量不变。
  */
+/** 这条消息是否属于微信运行包覆盖的范围（绑定 bot 的那个角色，或从微信云端导入的消息）。 */
+function touchesWeixinRuntime(message: ChatMessage): boolean {
+  if (message.cloudSync?.source === "weixin-cloud") return true;
+  return resolveWeixinCloudMessageTarget(message) !== null;
+}
+
 export function findWeixinCloudOutboundAnchor(messages: ChatMessage[]): ChatMessage | undefined {
   return messages.find(message =>
     message.cloudSync?.source === "weixin-cloud"
