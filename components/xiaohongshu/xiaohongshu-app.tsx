@@ -29,7 +29,7 @@ import { getChatImageFromIndexedDB, saveChatImageToIndexedDB } from "@/lib/chat-
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import { incrementEventCounter } from "@/lib/memory-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
+import { maybeRunPalaceMemory } from "@/lib/palace-engine";
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import { Toggle } from "@/components/ui/form";
 import { CheckPhoneBilingualText } from "@/components/checkphone/checkphone-bilingual-text";
@@ -1104,7 +1104,7 @@ export function XiaohongshuApp({ onClose, onNotice, visible = true, onIdle, onBu
 
   function touchCharacterMemory(character: Character) {
     incrementEventCounter(character.id);
-    maybeRunSummarization(character.id, character.name)
+    maybeRunPalaceMemory(character.id, character.name)
       .catch(err => console.warn("[Xiaohongshu] Summarization check failed:", err));
   }
 

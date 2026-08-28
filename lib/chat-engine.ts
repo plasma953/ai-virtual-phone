@@ -58,7 +58,7 @@ import { classifyHttpError, fetchWithRelayRetry, describeNetworkFetchError } fro
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { maybeRunPalaceMemory } from "./palace-engine";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { findEnabledToolForSchema, getEnabledTools, type EnabledTool } from "./tool-storage";
@@ -2917,7 +2917,7 @@ async function generateChatCompletionCore(
         try {
             incrementEventCounter(character.id); // user message
             incrementEventCounter(character.id); // AI reply
-            await maybeRunSummarization(character.id, character.name);
+            await maybeRunPalaceMemory(character.id, character.name);
         } catch (err) {
             console.warn("[ChatEngine] Memory counter/summarization failed:", err);
         }

@@ -39,7 +39,7 @@ import CSSSchemeBar from "@/components/ui/css-scheme-picker";
 import { Avatar } from "@/components/ui/primitives";
 import { StoryHtmlRenderer } from "@/components/ui/story-html-renderer";
 import { loadCharacters } from "@/lib/character-storage";
-import { maybeRunSummarization } from "@/lib/memory-summarizer";
+import { maybeRunPalaceMemory } from "@/lib/palace-engine";
 import { incrementEventCounter } from "@/lib/memory-storage";
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import {
@@ -655,7 +655,7 @@ export function StoryApp({ onClose }: StoryAppProps) {
           try {
             incrementEventCounter(characterId);
             incrementEventCounter(characterId);
-            await maybeRunSummarization(characterId, storyCharacter.name);
+            await maybeRunPalaceMemory(characterId, storyCharacter.name);
           } catch (err) {
             console.warn("[StoryApp] Memory counter/summarization failed:", err);
           }

@@ -39,7 +39,7 @@ import type { PresetConfig, ApiConfig } from "./settings-types";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { maybeRunPalaceMemory } from "./palace-engine";
 import { assemblePromptPayload, type LLMMessage, type AssemblerInput } from "./llm-prompt-assembler";
 import type { RegexConfig } from "./settings-types";
 import { prepareShortTermContext } from "./short-term-assembler";
@@ -367,7 +367,7 @@ async function triggerAIPost(characterId: string): Promise<void> {
 
         // Increment event counter for auto-summarization (native data read at summarization time)
         incrementEventCounter(characterId);
-        maybeRunSummarization(characterId, character.name)
+        maybeRunPalaceMemory(characterId, character.name)
             .catch(err => console.warn("[Moments] Summarization check failed:", err));
 
         dispatchMomentsUpdated();
@@ -841,7 +841,7 @@ async function generateAIComment(post: MomentPost, character: Character): Promis
 
     // Increment event counter for auto-summarization (native data read at summarization time)
     incrementEventCounter(character.id);
-    maybeRunSummarization(character.id, character.name)
+    maybeRunPalaceMemory(character.id, character.name)
         .catch(err => console.warn("[Moments] Summarization check failed:", err));
 
     dispatchMomentsUpdated();
@@ -1047,7 +1047,7 @@ async function triggerCharacterReply(
 
         // Increment event counter for auto-summarization
         incrementEventCounter(characterId);
-        maybeRunSummarization(characterId, character.name)
+        maybeRunPalaceMemory(characterId, character.name)
             .catch(err => console.warn("[Moments] Summarization check failed:", err));
     }
     return repliedToUser;

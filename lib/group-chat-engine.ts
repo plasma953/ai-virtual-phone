@@ -64,7 +64,7 @@ import {
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
-import { maybeRunSummarization } from "./memory-summarizer";
+import { maybeRunPalaceMemory } from "./palace-engine";
 import { prepareShortTermContext, prepareGroupShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
 import { getCustomStickerExample, loadCustomStickers } from "./custom-sticker-storage";
@@ -269,7 +269,7 @@ function scheduleGroupMemorySummarization(
             incrementEventCounter(characterId);
         }
 
-        maybeRunSummarization(characterId, character.name)
+        maybeRunPalaceMemory(characterId, character.name)
             .catch(err => console.warn("[GroupChat] Memory counter/summarization failed:", err));
     }
 }

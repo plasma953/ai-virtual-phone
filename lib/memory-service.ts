@@ -1,204 +1,129 @@
 // lib/memory-service.ts
-// High-level memory orchestration: retrieve long-term memories for prompt injection.
-// Kiwi-style enhancement: hybrid ranking (vector similarity × heat) + recall heat tracking.
+// 心潮·念 v3（记忆宫殿）—— 门面层
+// 策略：「保留签名、替换心脏」——22 个业务引擎只认识这两个检索函数，
+// 内部已全部改走记忆宫殿：语义记忆 = 混合检索（向量85% + 本地BM25 15%）+ 扩散激活；
+// 底色认知 = 四块门牌（TA的事/我是谁/我们之间/我的领域）每轮常驻，不再"抽卡"。
+// 旧 v2 记忆经幂等迁移进入宫殿（core→用户房，long_term→客厅），v2 数据保留可回退。
 
 import type { MemoryConfig, MemoryEntry } from "./memory-types";
-import { loadMemoryEntriesByType, saveMemoryHeat } from "./memory-storage";
+import type { MemoryNode } from "./palace-types";
+import { ROOM_LABELS } from "./palace-types";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
-import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity } from "./memory-embedding";
-import { heatScore, touchMemory } from "./memory-heat";
-/**
- * 记忆引擎版本判定：classic = 原版（无热度、无 Dream），kiwi = Kiwi 热度引擎。
- * 这是引擎级总闸——即使 heatEnabled=true，classic 下热度功能也全部停用。
- */
-export function isKiwiEngine(config: MemoryConfig): boolean {
-    return config.memoryEngineVersion !== "classic";
-}
+import { resolveEmbeddingModel } from "./memory-embedding";
 import { estimateTokens } from "./token-counter";
+import { palaceHybridSearch, palaceSpreadActivation } from "./palace-search";
+import {
+    bulkPutPalaceNodes,
+    loadPalacePlates,
+    migrateLegacyEntriesToPalace,
+} from "./palace-storage";
 
 /**
- * Retrieve relevant long-term memories for prompt injection.
- * Strategy:
- *   1. Total tokens <= longTermTokenBudget → return all
- *   2. Over budget + embedding API configured → hybrid ranking
- *      (vector similarity + heat), fill until budget
- *   3. Over budget + no embedding → heat & recency hybrid, fill until budget
- * Recalled entries get a heat boost (fire-and-forget persistence).
- * Embedding API is resolved from auxiliary binding (global, not per-character).
+ * 旧引擎版本判定。宫殿 v3 起后端恒为记忆宫殿，该函数保留导出
+ * 仅为兼容旧引擎模块（memory-dream / memory-conflict）的引用。
+ */
+export function isKiwiEngine(_config: MemoryConfig): boolean {
+    void _config;
+    return true;
+}
+
+/** 宫殿节点 → 旧 MemoryEntry 适配（保真字段完整携带，业务格式化器零改动）。 */
+function nodeToEntry(node: MemoryNode): MemoryEntry {
+    const createdIso = new Date(node.createdAt).toISOString();
+    return {
+        id: node.id,
+        characterId: node.characterId,
+        sourceApp: "chat",
+        type: "long_term",
+        content: node.content,
+        embedding: node.embedding,
+        importance: node.importance / 10,
+        createdAt: createdIso,
+        updatedAt: createdIso,
+        accessCount: node.accessCount,
+        lastAccessedAt: new Date(node.lastAccessedAt).toISOString(),
+        status: node.status,
+        quote: node.quote,
+        quoteSource: node.quoteSource,
+        metadata: { palaceRoom: node.room, roomLabel: ROOM_LABELS[node.room] },
+    };
+}
+
+/**
+ * 语义记忆检索（原「长期记忆」注入点，签名不变）。
+ * 宫殿实现：懒迁移 → 混合检索（嵌入可用=向量+BM25 融合；无嵌入=纯本地 BM25）
+ * → 扩散激活（沿链接图联想关联记忆）→ token 预算顺取。
+ * 召回节点 accessCount+1 为 fire-and-forget（熟悉度加成的输入）。
  */
 export async function retrieveMemoriesForPrompt(
     characterId: string,
     currentContext: string,
     config: MemoryConfig
 ): Promise<MemoryEntry[]> {
-    const longTermEntries = await loadMemoryEntriesByType(characterId, "long_term");
-    if (longTermEntries.length === 0 || !currentContext.trim()) return [];
+    if (!currentContext.trim()) return [];
+    await migrateLegacyEntriesToPalace(characterId).catch(() => null);
 
-    const budget = config.longTermTokenBudget;
+    const embeddingApiConfig = config.vectorRecallEnabled
+        ? resolveAuxiliaryApiConfig("embeddingApiConfigId")
+        : null;
+    const usable = embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)
+        ? embeddingApiConfig
+        : null;
 
-    // Calculate total tokens for all entries
-    let totalTokens = 0;
-    for (const entry of longTermEntries) {
-        totalTokens += estimateTokens(entry.content) + 4;
-    }
+    const budget = Math.max(0, config.longTermTokenBudget);
+    const seeded = await palaceHybridSearch(currentContext, characterId, {
+        embeddingApiConfig: usable,
+        topK: 40,
+    });
+    const expanded = await palaceSpreadActivation(seeded, characterId, 6);
+    const picked = fillByBudget(expanded.map(s => nodeToEntry(s.node)), budget);
 
-    // Strategy 1: all fit within budget → return all (touch all: everything is injected)
-    if (totalTokens <= budget) {
-        trackRecalledHeat(longTermEntries, config);
-        return longTermEntries;
-    }
-
-    const useHeat = isKiwiEngine(config) && config.heatEnabled !== false;
-    // Strategy 2: vector recall enabled + embedding API configured → hybrid search
-    const embeddingApiConfig = config.vectorRecallEnabled ? resolveAuxiliaryApiConfig("embeddingApiConfigId") : null;
-    if (embeddingApiConfig && resolveEmbeddingModel(embeddingApiConfig)) {
-        const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig);
-        if (queryEmbedding) {
-            const withEmbeddings = longTermEntries.filter(m => m.embedding && m.embedding.length > 0);
-            if (withEmbeddings.length > 0) {
-                const now = Date.now();
-                const scored = withEmbeddings.map(entry => {
-                    const sim = cosineSimilarity(queryEmbedding, entry.embedding!);
-                    if (!useHeat) return { entry, score: sim };
-                    // Hybrid: similarity × (1-w) + heat × w  → 既相关又"熟悉"的记忆优先
-                    const heatW = Math.min(1, Math.max(0, config.heatWeightInRanking ?? 0.35));
-                    const h = heatScore(entry, now, config.heatHalfLifeDays ?? 7);
-                    return { entry, score: sim * (1 - heatW) + h * heatW };
-                });
-                scored.sort((a, b) => b.score - a.score);
-                const picked = pickByBudget(scored, config, budget);
-                if (useHeat) trackRecalledHeat(picked, config);
-                return picked;
-            }
+    if (picked.length > 0) {
+        const touched = picked
+            .map(e => expanded.find(s => s.node.id === e.id)?.node)
+            .filter((n): n is MemoryNode => Boolean(n))
+            .map(n => ({
+                ...n,
+                accessCount: (n.accessCount || 0) + 1,
+                lastAccessedAt: Date.now(),
+            }));
+        if (touched.length > 0) {
+            bulkPutPalaceNodes(touched).catch(() => {
+                /* 熟悉度追踪失败不影响主流程 */
+            });
         }
     }
-
-    // Strategy 3: no embedding support → heat & recency hybrid, fill by budget
-    const now = Date.now();
-    const times = longTermEntries.map(e => new Date(e.createdAt).getTime());
-    const minT = Math.min(...times);
-    const maxT = Math.max(...times);
-    const span = Math.max(1, maxT - minT);
-    const scored = longTermEntries.map(entry => {
-        const recencyT = new Date(entry.createdAt).getTime();
-        const recencyScore = (recencyT - minT) / span; // 0(最旧) ~ 1(最新)
-        if (!useHeat) return { entry, score: recencyT }; // 原行为：纯时间排序
-        const heatW = Math.min(1, Math.max(0, config.heatWeightInRanking ?? 0.35));
-        const h = heatScore(entry, now, config.heatHalfLifeDays ?? 7);
-        return { entry, score: recencyScore * (1 - heatW) + h * heatW };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    const picked = pickByBudget(scored, config, budget);
-    if (useHeat) trackRecalledHeat(picked, config);
     return picked;
 }
 
 /**
- * 预算填充入口：
- * - 普通模式：按评分顺取直到预算耗尽（fillByBudget）
- * - 日历套娃模式：按 今天/本周/本月/更早 分层分配预算（近层更详细），
- *   预算取 min(calendarSummaryTokenBudget, longTermTokenBudget)。
+ * 底色认知（原「核心记忆」注入点，签名不变）。
+ * 宫殿实现：四块门牌作为每轮常驻 Constraint——稳定认知不再走检索。
+ * 返回 PlateEntry 的 MemoryEntry 适配，沿用业务方现有格式化器（逐条 bullet）。
+ * coreMemoryTokenBudget 兜底截断。
  */
-function pickByBudget(
-    scored: { entry: MemoryEntry; score: number }[],
-    config: MemoryConfig,
-    budget: number,
-): MemoryEntry[] {
-    if (!config.calendarSummaryEnabled) {
-        return fillByBudget(scored.map(s => s.entry), budget);
-    }
-    const calendarBudget = (config.calendarSummaryTokenBudget ?? 0) > 0
-        ? Math.min(config.calendarSummaryTokenBudget, budget)
-        : budget;
-    return selectByCalendarLayers(scored, calendarBudget);
-}
-
-/**
- * 日历套娃分层选择：模拟人脑按时间粒度组织记忆——「今天」记得最细（50% 预算），
- * 「本周」次之（25%），「本月」再之（15%），「更早」仅留少量（10%）。
- * 每层内部仍按混合评分（向量×热度）排序；某层为空/吃不满时预算顺延给后续层。
- */
-function selectByCalendarLayers(
-    scored: { entry: MemoryEntry; score: number }[],
-    budget: number,
-): MemoryEntry[] {
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const startOfWeek = startOfToday - ((now.getDay() + 6) % 7) * 86_400_000; // 周一为周起点
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-
-    const layers: { from: number; to: number; share: number }[] = [
-        { from: startOfToday, to: Infinity, share: 0.50 },
-        { from: startOfWeek, to: startOfToday, share: 0.25 },
-        { from: startOfMonth, to: startOfWeek, share: 0.15 },
-        { from: 0, to: startOfMonth, share: 0.10 },
-    ];
-
-    const selected: MemoryEntry[] = [];
-    let remaining = budget;
-    for (const layer of layers) {
-        if (remaining <= 0) break;
-        const layerScored = scored
-            .filter(({ entry }) => {
-                const t = new Date(entry.createdAt).getTime();
-                if (Number.isNaN(t)) return false;
-                return t >= layer.from && t < layer.to;
-            })
-            .sort((a, b) => b.score - a.score);
-        if (layerScored.length === 0) continue;
-        const layerBudget = Math.floor(budget * layer.share);
-        const picked = fillByBudget(layerScored.map(s => s.entry), Math.min(layerBudget, remaining));
-        selected.push(...picked);
-        for (const p of picked) {
-            remaining -= estimateTokens(p.content) + 4;
-        }
-    }
-    return selected;
-}
-
 export async function retrieveCoreMemoriesForPrompt(
     characterId: string,
     config: MemoryConfig,
 ): Promise<MemoryEntry[]> {
-    const coreEntries = await loadMemoryEntriesByType(characterId, "core");
-    if (coreEntries.length === 0) return [];
+    await migrateLegacyEntriesToPalace(characterId).catch(() => null);
+    const plates = await loadPalacePlates(characterId);
+    if (plates.length === 0) return [];
 
-    const now = Date.now();
-const useHeat = isKiwiEngine(config) && config.heatEnabled !== false;
-    const heatW = useHeat ? Math.min(1, Math.max(0, config.heatWeightInRanking ?? 0.35)) : 0;
-
-    const sorted = [...coreEntries].sort((a, b) => {
-        // 1) active 标记优先（保留原业务逻辑）
-        const aActive = a.metadata?.active ? 1 : 0;
-        const bActive = b.metadata?.active ? 1 : 0;
-        if (aActive !== bActive) return bActive - aActive;
-        // 2) 热度加权
-        if (useHeat) {
-            const aH = heatScore(a, now, config.heatHalfLifeDays ?? 7);
-            const bH = heatScore(b, now, config.heatHalfLifeDays ?? 7);
-            if (Math.abs(aH - bH) > 0.01) return bH - aH;
-        }
-        // 3) 时间兜底（保留原行为）
-        const aDate = String(a.metadata?.eventDate ?? a.updatedAt ?? a.createdAt);
-        const bDate = String(b.metadata?.eventDate ?? b.updatedAt ?? b.createdAt);
-        return bDate.localeCompare(aDate);
-    });
-
-    const picked = fillByBudget(sorted, config.coreMemoryTokenBudget);
-    if (useHeat) trackRecalledHeat(picked, config);
-    return picked;
-}
-
-/** Fire-and-forget: boost heat of recalled entries (persist async, never block). */
-function trackRecalledHeat(entries: MemoryEntry[], config: MemoryConfig): void {
-    if (!entries.length || !isKiwiEngine(config) || config.heatEnabled === false) return;
-    const boost = config.heatBoostOnRecall ?? 0.18;
-    for (const entry of entries) {
-        const touched = touchMemory(entry, boost);
-        saveMemoryHeat(touched).catch(() => {
-            /* 热度追踪失败不影响主流程 */
-        });
-    }
+    const entries: MemoryEntry[] = plates
+        .map(p => ({
+            id: p.id,
+            characterId: p.characterId,
+            sourceApp: "chat" as const,
+            type: "core" as const,
+            content: p.content,
+            importance: 1,
+            createdAt: new Date(p.firstLearnedAt || p.createdAt).toISOString(),
+            updatedAt: new Date(p.updatedAt).toISOString(),
+            metadata: { plate: true },
+        }))
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return fillByBudget(entries, Math.max(0, config.coreMemoryTokenBudget));
 }
 
 /** Pick entries in order until token budget is exhausted. */
